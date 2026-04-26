@@ -3,3 +3,4 @@
 feedbuddy.db*
 sources.txt
 __pycache__
+.claude

@@ -403,7 +403,7 @@ def poll_feeds(db):
 
 def user_allowed(user_id):
     if not ADMIN_USER_ID:
-        return True
+        return False
     return str(user_id) == str(ADMIN_USER_ID)
 
 
@@ -611,6 +611,13 @@ def last_items(limit=10):
     return rows
 
 
+def safe_href(url):
+    """Return url only if it uses http(s); otherwise a safe fallback."""
+    if url and url.startswith(("http://", "https://")):
+        return url
+    return "#"
+
+
 def article_time(row):
     return row["published"] or row["seen_at"] or ""
 
@@ -689,12 +696,12 @@ def render_index():
         body.append("<article><h2>No articles yet.</h2></article>")
     for row in items:
         title = escape(row["title"] or "(no title)")
-        url = escape(row["url"] or "#")
+        url = escape(safe_href(row["url"]))
         feed_url = escape(row["feed_url"] or "")
         when = escape(article_time(row))
         trello = ""
         if row["trello_saved"] and row["trello_card_url"]:
-            card_url = escape(row["trello_card_url"])
+            card_url = escape(safe_href(row["trello_card_url"]))
             trello = f' <a class="tag" href="{card_url}">trello</a>'
         body.append("<article>")
         body.append(f'<h2><a href="{url}">{title}</a>{trello}</h2>')
