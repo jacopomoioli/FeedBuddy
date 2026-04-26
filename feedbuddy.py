@@ -86,11 +86,16 @@ def open_db():
         """
         create table if not exists feeds (
             url text primary key,
+            label text,
             title text,
             added_at text not null
         )
         """
     )
+    cols = db.execute("pragma table_info(feeds)").fetchall()
+    colnames = {row[1] for row in cols}
+    if "label" not in colnames:
+        db.execute("alter table feeds add column label text")
     db.execute(
         """
         create table if not exists items (
@@ -200,35 +205,48 @@ def answer_callback_query(callback_id, text):
         log("callback answer failed:", e)
 
 
-def append_source_file(url):
-    existing = set(read_sources_file())
+def append_source_file(url, label=None):
+    existing = {row["url"] for row in read_sources_file()}
     if url in existing:
         return
     with open(SOURCES_PATH, "a", encoding="utf-8") as f:
         if os.path.getsize(SOURCES_PATH) > 0:
             f.write("\n")
-        f.write(url)
+        if label:
+            f.write(f"{label} | {url}")
+        else:
+            f.write(url)
 
 
-def rewrite_source_file(urls):
+def rewrite_source_file(rows):
     with open(SOURCES_PATH, "w", encoding="utf-8") as f:
-        for i, url in enumerate(urls):
+        for i, row in enumerate(rows):
             if i:
                 f.write("\n")
-            f.write(url)
+            if row["label"]:
+                f.write(f"{row['label']} | {row['url']}")
+            else:
+                f.write(row["url"])
+
+
+def parse_source_line(line):
+    if " | " in line:
+        label, url = line.split(" | ", 1)
+        return {"label": label.strip(), "url": url.strip()}
+    return {"label": None, "url": line.strip()}
 
 
 def read_sources_file():
     if not os.path.exists(SOURCES_PATH):
         return []
-    urls = []
+    rows = []
     with open(SOURCES_PATH, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            urls.append(line)
-    return urls
+            rows.append(parse_source_line(line))
+    return rows
 
 
 def feed_title(parsed, url):
@@ -278,13 +296,16 @@ def fetch_feed(url):
 
 
 def import_sources(db):
-    for url in read_sources_file():
-        ensure_feed(db, url, catch_up=True)
+    for row in read_sources_file():
+        ensure_feed(db, row["url"], label=row["label"], catch_up=True)
 
 
-def ensure_feed(db, url, catch_up=False):
-    row = db.execute("select url from feeds where url = ?", (url,)).fetchone()
+def ensure_feed(db, url, label=None, catch_up=False):
+    row = db.execute("select url, label from feeds where url = ?", (url,)).fetchone()
     if row:
+        if label and label != row["label"]:
+            db.execute("update feeds set label = ? where url = ?", (label, url))
+            db.commit()
         return False
     title = url
     try:
@@ -293,8 +314,8 @@ def ensure_feed(db, url, catch_up=False):
         log("cannot fetch feed during import:", url, e)
         entries = []
     db.execute(
-        "insert into feeds(url, title, added_at) values(?, ?, ?)",
-        (url, title, now()),
+        "insert into feeds(url, label, title, added_at) values(?, ?, ?, ?)",
+        (url, label, title, now()),
     )
     if catch_up:
         for entry in entries:
@@ -315,7 +336,11 @@ def delete_feed(db, url):
 
 
 def list_feeds(db):
-    return db.execute("select url, title from feeds order by url").fetchall()
+    return db.execute("select url, label, title from feeds order by url").fetchall()
+
+
+def feed_display_name(label, url):
+    return label or url
 
 
 def unsent_new_items(db, feed_url, entries):
@@ -382,7 +407,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
 
 
 def poll_feeds(db):
-    feeds = db.execute("select url, title from feeds order by url").fetchall()
+    feeds = db.execute("select url, label, title from feeds order by url").fetchall()
     for feed in feeds:
         try:
             title, entries = fetch_feed(feed["url"])
@@ -394,7 +419,12 @@ def poll_feeds(db):
         new_items = unsent_new_items(db, feed["url"], entries)
         for entry in new_items:
             try:
-                send_feed_item(db, feed["url"], title, entry)
+                send_feed_item(
+                    db,
+                    feed["url"],
+                    feed_display_name(feed["label"], feed["url"]),
+                    entry,
+                )
                 log("sent:", entry["title"])
                 time.sleep(1)
             except Exception as e:
@@ -429,15 +459,18 @@ def send_help(chat_id):
 
 
 def handle_addfeed(db, chat_id, url):
+    row = parse_source_line(url)
+    label = row["label"]
+    url = row["url"]
     if not url.startswith(("http://", "https://")):
         send_message(chat_id, "bad url")
         return
     try:
-        created = ensure_feed(db, url, catch_up=True)
+        created = ensure_feed(db, url, label=label, catch_up=True)
         if not created:
             send_message(chat_id, "feed already exists")
             return
-        append_source_file(url)
+        append_source_file(url, label=label)
         send_message(chat_id, "feed added")
     except Exception as e:
         send_message(chat_id, f"cannot add feed: {e}")
@@ -447,9 +480,9 @@ def handle_delfeed(db, chat_id, url):
     if not url:
         send_message(chat_id, "missing url")
         return
+    url = parse_source_line(url)["url"]
     delete_feed(db, url)
-    urls = [row["url"] for row in list_feeds(db)]
-    rewrite_source_file(urls)
+    rewrite_source_file(list_feeds(db))
     send_message(chat_id, "feed removed")
 
 
@@ -460,7 +493,11 @@ def handle_listfeeds(db, chat_id):
         return
     lines = []
     for row in feeds:
-        lines.append(row["url"])
+        name = feed_display_name(row["label"], row["url"])
+        if row["label"]:
+            lines.append(f"{name} | {row['url']}")
+        else:
+            lines.append(name)
     chunk = []
     size = 0
     for line in lines:
@@ -532,7 +569,14 @@ def handle_summary(db, chat_id):
         if row["url"]:
             lines.append(row["url"])
         if row["feed_url"]:
-            lines.append(f"feed: {row['feed_url']}")
+            feed = db.execute(
+                "select label, url from feeds where url = ?",
+                (row["feed_url"],),
+            ).fetchone()
+            name = row["feed_url"]
+            if feed:
+                name = feed_display_name(feed["label"], feed["url"])
+            lines.append(f"feed: {name}")
         lines.append("")
     text = "\n".join(lines).strip()
     if len(text) > 4000:
@@ -622,8 +666,44 @@ def article_time(row):
     return row["published"] or row["seen_at"] or ""
 
 
+def feed_status_rows():
+    rows = []
+    for source in read_sources_file():
+        url = source["url"]
+        label = source["label"]
+        try:
+            title, entries = fetch_feed(url)
+            published = "no entries"
+            if entries:
+                published = entries[0]["published"] or "date missing"
+            rows.append(
+                {
+                    "title": feed_display_name(label, url),
+                    "url": url,
+                    "published": published,
+                    "real_title": title,
+                }
+            )
+        except Exception as e:
+            rows.append(
+                {
+                    "title": feed_display_name(label, url),
+                    "url": url,
+                    "published": f"error: {e}",
+                    "real_title": url,
+                }
+            )
+    return rows
+
+
 def render_index():
     items = last_items(10)
+    feeds = feed_status_rows()
+    feed_names = {}
+    db = open_db()
+    for row in db.execute("select url, label from feeds").fetchall():
+        feed_names[row["url"]] = feed_display_name(row["label"], row["url"])
+    db.close()
     body = []
     body.append("<!doctype html>")
     body.append("<html>")
@@ -653,6 +733,10 @@ def render_index():
         .sub {
             color: #6f655c;
             margin-bottom: 28px;
+        }
+        .section {
+            margin: 30px 0 14px;
+            font-size: 24px;
         }
         article {
             background: #fffdf9;
@@ -684,6 +768,24 @@ def render_index():
             font-size: 12px;
             vertical-align: middle;
         }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #fffdf9;
+            border: 1px solid #d8cfc4;
+        }
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            vertical-align: top;
+            border-bottom: 1px solid #e7ddd1;
+        }
+        th {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #6f655c;
+        }
         """
     )
     body.append("</style>")
@@ -692,12 +794,13 @@ def render_index():
     body.append("<main>")
     body.append("<h1>FeedBuddy</h1>")
     body.append("<div class=\"sub\">Last 10 sent articles, oldest first.</div>")
+    body.append("<div class=\"section\">Recent posts</div>")
     if not items:
         body.append("<article><h2>No articles yet.</h2></article>")
     for row in items:
         title = escape(row["title"] or "(no title)")
         url = escape(safe_href(row["url"]))
-        feed_url = escape(row["feed_url"] or "")
+        feed_url = escape(feed_names.get(row["feed_url"], row["feed_url"] or ""))
         when = escape(article_time(row))
         trello = ""
         if row["trello_saved"] and row["trello_card_url"]:
@@ -708,6 +811,15 @@ def render_index():
         body.append(f'<div class="meta">{when}</div>')
         body.append(f'<div class="meta">{feed_url}</div>')
         body.append("</article>")
+    body.append("<div class=\"section\">Feeds</div>")
+    body.append("<table>")
+    body.append("<tr><th>Feed</th><th>Last post</th></tr>")
+    for row in feeds:
+        title = escape(row["title"])
+        url = escape(safe_href(row["url"]))
+        published = escape(row["published"])
+        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{published}</td></tr>')
+    body.append("</table>")
     body.append("</main>")
     body.append("</body>")
     body.append("</html>")
