@@ -21,7 +21,7 @@ Edit it and set the right env vars as described below (`TELEGRAM_BOT_TOKEN` and 
 - `TELEGRAM_CHAT_ID`: the only Telegram chat allowed to talk to the bot, and also the destination chat for notifications. Get it from `@GetMyIDo_Bot`
 - `WEB_HOST` & `WEB_PORT`: bind address & port for the web page, default is `127.0.0.1`, `8080`
 - `TRELLO_KEY` & `TRELLO_TOKEN`: generate them by creating a new app [here](https://trello.com/power-ups/admin/)
-- `TRELLO_BOARD_ID` & `TRELLO_LIST_ID`: id of the board and of the list in which the bot will add articles. You can set up `TRELLO_KEY` and `TRELLO_TOKEN`, then run the utility script `trello_list_boards.py` to find those ids 
+- `TRELLO_LIST_ID`: id of the list in which the bot will add articles. You can set up `TRELLO_KEY` and `TRELLO_TOKEN`, then run the utility script `trello_list_boards.py` to find the right id 
 
 After this, activate the virtual environment, install the dependencies (only feedparser for now) and run it:
 
