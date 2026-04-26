@@ -66,7 +66,6 @@ load_dotenv()
 
 BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
 TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
-ADMIN_USER_ID = env("TELEGRAM_ADMIN_USER_ID")
 TRELLO_KEY = env("TRELLO_KEY")
 TRELLO_TOKEN = env("TRELLO_TOKEN")
 TRELLO_LIST_ID = env("TRELLO_LIST_ID")
@@ -431,10 +430,8 @@ def poll_feeds(db):
                 log("send failed:", entry["title"], e)
 
 
-def user_allowed(user_id):
-    if not ADMIN_USER_ID:
-        return False
-    return str(user_id) == str(ADMIN_USER_ID)
+def chat_allowed(chat_id):
+    return str(chat_id) == str(TARGET_CHAT_ID)
 
 
 def parse_command(text):
@@ -855,9 +852,8 @@ def start_web():
 
 def handle_callback_query(db, update):
     cb = update["callback_query"]
-    user_id = cb.get("from", {}).get("id")
-    if not user_allowed(user_id):
-        answer_callback_query(cb["id"], "not allowed")
+    chat_id = cb.get("message", {}).get("chat", {}).get("id")
+    if not chat_allowed(chat_id):
         return
     data = cb.get("data") or ""
     if not data.startswith("save:"):
@@ -877,47 +873,13 @@ def handle_callback_query(db, update):
         answer_callback_query(cb["id"], "save failed")
 
 
-def reaction_has_star(reactions):
-    for r in reactions or []:
-        emoji = r.get("emoji")
-        if emoji == "⭐":
-            return True
-    return False
-
-
-def handle_message_reaction(db, update):
-    if not trello_enabled():
-        return
-    reaction = update.get("message_reaction") or {}
-    user = reaction.get("user")
-    actor_chat = reaction.get("actor_chat")
-    user_id = user.get("id") if user else None
-    if user_id is not None and not user_allowed(user_id):
-        return
-    if user_id is None and actor_chat:
-        return
-    if not reaction_has_star(reaction.get("new_reaction")):
-        return
-    chat = reaction.get("chat") or {}
-    row = find_item_by_message(db, chat.get("id"), reaction.get("message_id"))
-    if not row:
-        return
-    try:
-        card_url = save_item_to_trello(db, row["id"])
-        send_message(chat["id"], card_url)
-    except Exception as e:
-        log("reaction save failed:", e)
-
-
 def handle_message(db, update):
     msg = update["message"]
     chat_id = msg["chat"]["id"]
-    user_id = msg.get("from", {}).get("id")
     text = msg.get("text") or ""
     if not text.startswith("/"):
         return
-    if not user_allowed(user_id):
-        send_message(chat_id, "not allowed")
+    if not chat_allowed(chat_id):
         return
     cmd, arg = parse_command(text)
     cmd = cmd.split("@", 1)[0]
@@ -946,7 +908,6 @@ def poll_telegram(db):
                 "allowed_updates": [
                     "message",
                     "callback_query",
-                    "message_reaction",
                 ],
             },
         )
@@ -961,8 +922,6 @@ def poll_telegram(db):
                 handle_message(db, update)
             elif "callback_query" in update:
                 handle_callback_query(db, update)
-            elif "message_reaction" in update:
-                handle_message_reaction(db, update)
         except Exception as e:
             log("update handling failed:", e)
 

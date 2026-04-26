@@ -1,65 +1,59 @@
 # FeedBuddy
 
-Local RSS bot for Telegram.
+Feed manager bot for Telegram.
 
-It:
-
-- polls feeds
+- polls RSS feeds
 - sends new posts to Telegram
-- lets you add/remove feeds from Telegram
-- can save posts to Trello
-- shows the last 10 sent posts on a local web page
+- can save posts to Trello to read later
+- lets you add/remove feeds from Telegram (via polling, no need for webhooks)
+- shows the last 10 sent posts on a minimal web page
 
-## Setup
+## Getting Started 
+In order to make this work, you need to copy `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Edit it and set the right env vars as described below (`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are required)
+
+- `TELEGRAM_BOT_TOKEN`: the token of the telegram bot. Get it from `@BotFather`
+- `TELEGRAM_CHAT_ID`: the only Telegram chat allowed to talk to the bot, and also the destination chat for notifications. Get it from `@GetMyIDo_Bot`
+- `WEB_HOST` & `WEB_PORT`: bind address & port for the web page, default is `127.0.0.1`, `8080`
+- `TRELLO_KEY` & `TRELLO_TOKEN`: generate them by creating a new app [here](https://trello.com/power-ups/admin/)
+- `TRELLO_BOARD_ID` & `TRELLO_LIST_ID`: id of the board and of the list in which the bot will add articles. You can set up `TRELLO_KEY` and `TRELLO_TOKEN`, then run the utility script `trello_list_boards.py` to find those ids 
+
+After this, activate the virtual environment, install the dependencies (only feedparser for now) and run it:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-```
-
-Fill `.env`.
-
-Required:
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-
-Recommended:
-
-- `TELEGRAM_ADMIN_USER_ID`
-
-Optional:
-
-- `WEB_HOST` default `127.0.0.1`
-- `WEB_PORT` default `8080`
-- `TRELLO_KEY`
-- `TRELLO_TOKEN`
-- `TRELLO_LIST_ID`
-- `TRELLO_BOARD_ID`
-
-## Run
-
-```bash
 python3 feedbuddy.py
 ```
 
-Web UI:
+## Telegram Commands
 
-- [http://127.0.0.1:8080/](http://127.0.0.1:8080/)
+The following commands are available via Telegram:
 
-## Telegram
+- `/help`: list the available commands
+- `/listfeeds`: list the loaded RSS feeds
+- `/addfeed <url>`: add a new RSS feed
+- `/delfeed <url>`: delete an existing RSS feed
+- `/summary`: list ever post published today
+- `/testsend`: send a test post
 
-- `/help`
-- `/listfeeds`
-- `/addfeed <url>`
-- `/delfeed <url>`
-- `/summary`
-- `/testsend`
+## Web Interface
+The web interface runs on http://127.0.0.1:8080 (default configuration).
 
-## Scripts
+The loading of the page could take a while, because it queries every rss feed and gets the last publishing timestamp. Here's a screenshot:
 
-- `python3 print_feed_status.py`
-- `python3 trello_check.py`
-- `python3 trello_list_boards.py`
+![Web Page screenshot](https://github.com/user-attachments/assets/6361c7fd-4563-4f45-8cee-22db17ba7fde)
+
+
+## Why
+There are a lot of different RSS solutions out there, i tried some of them but none felt right.
+
+I also wanted to move important stuff on another channel (like trello) to avoid losing them. I was inspired by some [Cal Newport's videos](https://www.youtube.com/watch?v=FiLYCq0SfN4).
+
+Also, most of the code was written by Codex. I wanted to build a small project to test coding agents, because being against them without having even tried is stupid (guilty of that, but as you can see I'm working on it).
