@@ -38,9 +38,11 @@ The following commands are available via Telegram:
 
 - `/help`: list the available commands
 - `/listfeeds`: list the loaded RSS feeds
-- `/addfeed <url>`: add a new RSS feed
+- `/addfeed label | <url>`: add a new RSS feed with label.
 - `/delfeed <url>`: delete an existing RSS feed
 - `/summary`: list ever post published today
+- `/testfeed <url>`: fetch and send the latest post of one feed
+- `/testall`: fetch and send the latest post of every configured feed
 - `/testsend`: send a test post
 
 ## Web Interface

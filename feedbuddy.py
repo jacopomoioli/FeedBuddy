@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from html import escape as html_escape
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -186,7 +187,7 @@ def tg_api(method, data):
     return reply["result"]
 
 
-def send_message(chat_id, text, reply_markup=None):
+def send_message(chat_id, text, reply_markup=None, parse_mode=None):
     data = {
         "chat_id": chat_id,
         "text": text,
@@ -194,6 +195,8 @@ def send_message(chat_id, text, reply_markup=None):
     }
     if reply_markup:
         data["reply_markup"] = reply_markup
+    if parse_mode:
+        data["parse_mode"] = parse_mode
     return tg_api("sendMessage", data)
 
 
@@ -355,11 +358,13 @@ def unsent_new_items(db, feed_url, entries):
 
 
 def format_item(feed_name, entry):
-    lines = [entry["title"], "", entry["link"]]
     if feed_name:
-        lines.append("")
-        lines.append(f"feed: {feed_name}")
-    return "\n".join(lines)
+        return f"""{feed_name}: {entry["title"]}
+
+{entry["link"]}"""
+    return f"""{entry["title"]}
+
+{entry["link"]}"""
 
 
 def send_feed_item(db, feed_url, feed_name, entry):
@@ -449,6 +454,8 @@ def send_help(chat_id):
             "/addfeed <url>",
             "/delfeed <url>",
             "/summary",
+            "/testfeed <url>",
+            "/testall",
             "/testsend",
         ]
     )
@@ -491,21 +498,22 @@ def handle_listfeeds(db, chat_id):
     lines = []
     for row in feeds:
         name = feed_display_name(row["label"], row["url"])
-        if row["label"]:
-            lines.append(f"{name} | {row['url']}")
-        else:
-            lines.append(name)
+        title = html_escape(name)
+        url = html_escape(row["url"])
+        lines.append(f"<b>{title}</b>")
+        lines.append(f"<code>{url}</code>")
+        lines.append("")
     chunk = []
     size = 0
     for line in lines:
         if size + len(line) + 1 > 3500:
-            send_message(chat_id, "\n".join(chunk))
+            send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
             chunk = []
             size = 0
         chunk.append(line)
         size += len(line) + 1
     if chunk:
-        send_message(chat_id, "\n".join(chunk))
+        send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
 
 
 def handle_testsend(db, chat_id):
@@ -520,6 +528,50 @@ def handle_testsend(db, chat_id):
         send_message(chat_id, "test sent")
     except Exception as e:
         send_message(chat_id, f"test failed: {e}")
+
+
+def send_preview_item(chat_id, feed_name, entry):
+    send_message(chat_id, format_item(feed_name, entry))
+
+
+def handle_testfeed(db, chat_id, url):
+    row = parse_source_line(url)
+    url = row["url"]
+    if not url.startswith(("http://", "https://")):
+        send_message(chat_id, "bad url")
+        return
+    feed = db.execute(
+        "select label, url from feeds where url = ?",
+        (url,),
+    ).fetchone()
+    feed_name = feed_display_name(feed["label"], feed["url"]) if feed else url
+    try:
+        _, entries = fetch_feed(url)
+    except Exception as e:
+        send_message(chat_id, f"test failed: {e}")
+        return
+    if not entries:
+        send_message(chat_id, "no entries")
+        return
+    send_preview_item(chat_id, feed_name, entries[0])
+
+
+def handle_testall(db, chat_id):
+    feeds = list_feeds(db)
+    if not feeds:
+        send_message(chat_id, "no feeds")
+        return
+    for feed in feeds:
+        try:
+            _, entries = fetch_feed(feed["url"])
+        except Exception as e:
+            send_message(chat_id, f"{feed_display_name(feed['label'], feed['url'])}\n\nerror: {e}")
+            continue
+        if not entries:
+            send_message(chat_id, f"{feed_display_name(feed['label'], feed['url'])}\n\nno entries")
+            continue
+        send_preview_item(chat_id, feed_display_name(feed["label"], feed["url"]), entries[0])
+        time.sleep(1)
 
 
 def parse_date(value):
@@ -893,6 +945,10 @@ def handle_message(db, update):
         handle_delfeed(db, chat_id, arg)
     elif cmd == "/summary":
         handle_summary(db, chat_id)
+    elif cmd == "/testfeed":
+        handle_testfeed(db, chat_id, arg)
+    elif cmd == "/testall":
+        handle_testall(db, chat_id)
     elif cmd == "/testsend":
         handle_testsend(db, chat_id)
 
