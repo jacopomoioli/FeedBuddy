@@ -162,6 +162,35 @@ def http_post_json(url, data, timeout=30):
         return json.loads(r.read().decode())
 
 
+def http_post_multipart(url, fields, filename, file_content, timeout=30):
+    boundary = b"----feedbuddy"
+    parts = []
+    for name, value in fields.items():
+        parts.append(
+            b"--" + boundary + b"\r\n"
+            + f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+            + str(value).encode() + b"\r\n"
+        )
+    parts.append(
+        b"--" + boundary + b"\r\n"
+        + f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode()
+        + b"Content-Type: text/plain\r\n\r\n"
+        + file_content + b"\r\n"
+    )
+    parts.append(b"--" + boundary + b"--\r\n")
+    body = b"".join(parts)
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Content-Type": f"multipart/form-data; boundary={boundary.decode()}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
 def http_post_form(url, data, timeout=30):
     payload = urllib.parse.urlencode(data).encode()
     req = urllib.request.Request(
@@ -206,29 +235,6 @@ def answer_callback_query(callback_id, text):
     except Exception as e:
         log("callback answer failed:", e)
 
-
-def append_source_file(url, label=None):
-    existing = {row["url"] for row in read_sources_file()}
-    if url in existing:
-        return
-    with open(SOURCES_PATH, "a", encoding="utf-8") as f:
-        if os.path.getsize(SOURCES_PATH) > 0:
-            f.write("\n")
-        if label:
-            f.write(f"{label} | {url}")
-        else:
-            f.write(url)
-
-
-def rewrite_source_file(rows):
-    with open(SOURCES_PATH, "w", encoding="utf-8") as f:
-        for i, row in enumerate(rows):
-            if i:
-                f.write("\n")
-            if row["label"]:
-                f.write(f"{row['label']} | {row['url']}")
-            else:
-                f.write(row["url"])
 
 
 def parse_source_line(line):
@@ -296,10 +302,6 @@ def fetch_feed(url):
             entries.append(item)
     return feed_title(parsed, url), entries
 
-
-def import_sources(db):
-    for row in read_sources_file():
-        ensure_feed(db, row["url"], label=row["label"], catch_up=True)
 
 
 def ensure_feed(db, url, label=None, catch_up=False):
@@ -451,8 +453,9 @@ def send_help(chat_id):
         [
             "/help",
             "/listfeeds",
-            "/addfeed <url>",
+            "/addfeed label | <url>",
             "/delfeed <url>",
+            "/exportfeeds",
             "/summary",
             "/testfeed <url>",
             "/testall",
@@ -474,7 +477,6 @@ def handle_addfeed(db, chat_id, url):
         if not created:
             send_message(chat_id, "feed already exists")
             return
-        append_source_file(url, label=label)
         send_message(chat_id, "feed added")
     except Exception as e:
         send_message(chat_id, f"cannot add feed: {e}")
@@ -485,8 +487,11 @@ def handle_delfeed(db, chat_id, url):
         send_message(chat_id, "missing url")
         return
     url = parse_source_line(url)["url"]
+    row = db.execute("select url from feeds where url = ?", (url,)).fetchone()
+    if not row:
+        send_message(chat_id, "feed not found")
+        return
     delete_feed(db, url)
-    rewrite_source_file(list_feeds(db))
     send_message(chat_id, "feed removed")
 
 
@@ -514,6 +519,22 @@ def handle_listfeeds(db, chat_id):
         size += len(line) + 1
     if chunk:
         send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
+
+
+def handle_exportfeeds(db, chat_id):
+    feeds = list_feeds(db)
+    if not feeds:
+        send_message(chat_id, "no feeds")
+        return
+    lines = []
+    for row in feeds:
+        if row["label"]:
+            lines.append(f"{row['label']} | {row['url']}")
+        else:
+            lines.append(row["url"])
+    content = "\n".join(lines).encode()
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    http_post_multipart(url, {"chat_id": chat_id}, "feeds.txt", content)
 
 
 def handle_testsend(db, chat_id):
@@ -587,6 +608,13 @@ def parse_date(value):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone()
+
+
+def fmt_time(value):
+    dt = parse_date(value)
+    if not dt:
+        return value or ""
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def summary_rows_for_today(db):
@@ -684,25 +712,6 @@ def find_item_by_key(db, feed_url, key):
     ).fetchone()
 
 
-def last_items(limit=10):
-    db = open_db()
-    rows = db.execute(
-        """
-        select title, url, published, seen_at, feed_url, trello_saved, trello_card_url
-        from (
-            select title, url, published, seen_at, feed_url, trello_saved, trello_card_url
-            from items
-            where sent_message_id is not null
-            order by seen_at desc
-            limit ?
-        )
-        order by seen_at asc
-        """,
-        (limit,),
-    ).fetchall()
-    db.close()
-    return rows
-
 
 def safe_href(url):
     """Return url only if it uses http(s); otherwise a safe fallback."""
@@ -711,47 +720,32 @@ def safe_href(url):
     return "#"
 
 
-def article_time(row):
-    return row["published"] or row["seen_at"] or ""
 
-
-def feed_status_rows():
-    rows = []
-    for source in read_sources_file():
-        url = source["url"]
-        label = source["label"]
-        try:
-            title, entries = fetch_feed(url)
-            published = "no entries"
-            if entries:
-                published = entries[0]["published"] or "date missing"
-            rows.append(
-                {
-                    "title": feed_display_name(label, url),
-                    "url": url,
-                    "published": published,
-                    "real_title": title,
-                }
-            )
-        except Exception as e:
-            rows.append(
-                {
-                    "title": feed_display_name(label, url),
-                    "url": url,
-                    "published": f"error: {e}",
-                    "real_title": url,
-                }
-            )
-    return rows
+def feed_status_rows(db):
+    return db.execute(
+        """
+        select f.url, f.label, f.title, max(i.seen_at) as last_seen
+        from feeds f
+        left join items i on i.feed_url = f.url
+        group by f.url
+        order by f.url
+        """
+    ).fetchall()
 
 
 def render_index():
-    items = last_items(10)
-    feeds = feed_status_rows()
-    feed_names = {}
     db = open_db()
-    for row in db.execute("select url, label from feeds").fetchall():
-        feed_names[row["url"]] = feed_display_name(row["label"], row["url"])
+    items = db.execute(
+        """
+        select title, url, published, seen_at, feed_url, trello_saved, trello_card_url
+        from items
+        where sent_message_id is not null
+        order by seen_at desc
+        limit 10
+        """
+    ).fetchall()
+    feeds = feed_status_rows(db)
+    feed_names = {row["url"]: feed_display_name(row["label"], row["url"]) for row in feeds}
     db.close()
     body = []
     body.append("<!doctype html>")
@@ -842,7 +836,7 @@ def render_index():
     body.append("<body>")
     body.append("<main>")
     body.append("<h1>FeedBuddy</h1>")
-    body.append("<div class=\"sub\">Last 10 sent articles, oldest first.</div>")
+    body.append("<div class=\"sub\">Last 10 sent articles, newest first.</div>")
     body.append("<div class=\"section\">Recent posts</div>")
     if not items:
         body.append("<article><h2>No articles yet.</h2></article>")
@@ -850,24 +844,24 @@ def render_index():
         title = escape(row["title"] or "(no title)")
         url = escape(safe_href(row["url"]))
         feed_url = escape(feed_names.get(row["feed_url"], row["feed_url"] or ""))
-        when = escape(article_time(row))
+        seen = escape(fmt_time(row["seen_at"]))
         trello = ""
         if row["trello_saved"] and row["trello_card_url"]:
             card_url = escape(safe_href(row["trello_card_url"]))
             trello = f' <a class="tag" href="{card_url}">trello</a>'
         body.append("<article>")
         body.append(f'<h2><a href="{url}">{title}</a>{trello}</h2>')
-        body.append(f'<div class="meta">{when}</div>')
+        body.append(f'<div class="meta">seen: {seen}</div>')
         body.append(f'<div class="meta">{feed_url}</div>')
         body.append("</article>")
     body.append("<div class=\"section\">Feeds</div>")
     body.append("<table>")
     body.append("<tr><th>Feed</th><th>Last post</th></tr>")
     for row in feeds:
-        title = escape(row["title"])
+        title = escape(feed_display_name(row["label"], row["url"]))
         url = escape(safe_href(row["url"]))
-        published = escape(row["published"])
-        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{published}</td></tr>')
+        last_seen = escape(fmt_time(row["last_seen"]) if row["last_seen"] else "never")
+        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{last_seen}</td></tr>')
     body.append("</table>")
     body.append("</main>")
     body.append("</body>")
@@ -943,6 +937,8 @@ def handle_message(db, update):
         handle_addfeed(db, chat_id, arg)
     elif cmd == "/delfeed":
         handle_delfeed(db, chat_id, arg)
+    elif cmd == "/exportfeeds":
+        handle_exportfeeds(db, chat_id)
     elif cmd == "/summary":
         handle_summary(db, chat_id)
     elif cmd == "/testfeed":
@@ -984,7 +980,6 @@ def poll_telegram(db):
 
 def main():
     db = open_db()
-    import_sources(db)
     start_web()
     next_feed_check = 0
     log("started")
@@ -995,5 +990,30 @@ def main():
         poll_telegram(db)
 
 
+def cmd_import(path=SOURCES_PATH):
+    sources = read_sources_file() if path == SOURCES_PATH else [
+        parse_source_line(line.strip())
+        for line in open(path, encoding="utf-8")
+        if line.strip() and not line.startswith("#")
+    ]
+    if not sources:
+        print("no sources found in", path)
+        sys.exit(1)
+    db = open_db()
+    added = 0
+    for row in sources:
+        created = ensure_feed(db, row["url"], label=row["label"], catch_up=True)
+        if created:
+            added += 1
+            log("added:", row["url"])
+        else:
+            log("skipped (exists):", row["url"])
+    print(f"done: {added} added, {len(sources) - added} skipped")
+    db.close()
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "import":
+        cmd_import(sys.argv[2] if len(sys.argv) > 2 else SOURCES_PATH)
+    else:
+        main()
