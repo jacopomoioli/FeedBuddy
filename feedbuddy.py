@@ -72,6 +72,10 @@ TRELLO_LIST_ID = env("TRELLO_LIST_ID")
 WEB_HOST = env("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(env("WEB_PORT", "8080"))
 STALE_DAYS = int(env("STALE_DAYS", "60"))
+GEMINI_API_KEY = env("GEMINI_API_KEY")
+GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash")
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
 def trello_enabled():
@@ -114,6 +118,23 @@ def open_db():
             trello_card_url text,
             seen_at text not null,
             unique(feed_url, item_key)
+        )
+        """
+    )
+    db.execute(
+        """
+        create table if not exists tags (
+            id integer primary key autoincrement,
+            tag text not null unique
+        )
+        """
+    )
+    db.execute(
+        """
+        create table if not exists item_tags (
+            item_id integer not null references items(id),
+            tag text not null,
+            primary key (item_id, tag)
         )
         """
     )
@@ -209,6 +230,55 @@ def http_post_form(url, data, timeout=30):
         if not body:
             return {}
         return json.loads(body.decode())
+
+
+def ask_gemini(model, prompt):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    url = GEMINI_URL.format(model=model) + "?key=" + GEMINI_API_KEY
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0},
+    }
+    resp = http_post_json(url, payload, timeout=30)
+    return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def auto_tag_item(db, feed_url, entry):
+    available_tags = [row["tag"] for row in db.execute("select tag from tags order by tag").fetchall()]
+    if not available_tags:
+        return []
+    feed = db.execute("select label, url from feeds where url = ?", (feed_url,)).fetchone()
+    feed_name = feed_display_name(feed["label"], feed["url"]) if feed else (feed_url or "")
+    post_info = "\n".join([
+        f"title: {entry.get('title') or ''}",
+        f"url: {entry.get('link') or entry.get('url') or ''}",
+        f"source: {feed_name}",
+    ])
+    prompt = (
+        f"Post:\n{post_info}\n\n"
+        f"Available tags: {' '.join(available_tags)}\n\n"
+        "Based on the information provided about the post, and the list of available tags, "
+        "return a space separated string containing only the appropriate tags. "
+        "Use only tags from the list above. Return only the tags, nothing else. "
+        "If no tag fits, return an empty string."
+    )
+    raw = ask_gemini(GEMINI_MODEL, prompt)
+    matched = []
+    for word in raw.lower().split():
+        word = word.strip().strip("#")
+        if word in available_tags and f"#{word}" not in matched:
+            matched.append(f"#{word}")
+    return matched
+
+
+def save_item_tags(db, item_id, tags):
+    for tag in tags:
+        db.execute(
+            "insert or ignore into item_tags(item_id, tag) values(?, ?)",
+            (item_id, tag.lstrip("#")),
+        )
+    db.commit()
 
 
 def tg_api(method, data):
@@ -393,6 +463,15 @@ def send_feed_item(db, feed_url, feed_name, entry):
     )
     row = find_item_by_key(db, feed_url, entry["key"])
     item_id = row["id"]
+    tags = []
+    if GEMINI_API_KEY:
+        try:
+            tags = auto_tag_item(db, feed_url, entry)
+        except Exception as e:
+            log("auto-tag failed:", entry["title"], e)
+    text = format_item(feed_name, entry)
+    if tags:
+        text += "\n\n" + " ".join(tags)
     markup = None
     if trello_enabled():
         markup = {
@@ -400,7 +479,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
                 [{"text": "Save to Trello", "callback_data": f"save:{item_id}"}]
             ]
         }
-    msg = send_message(TARGET_CHAT_ID, format_item(feed_name, entry), markup)
+    msg = send_message(TARGET_CHAT_ID, text, markup)
     db.execute(
         """
         update items
@@ -417,6 +496,9 @@ def send_feed_item(db, feed_url, feed_name, entry):
         ),
     )
     db.commit()
+    if tags:
+        save_item_tags(db, item_id, tags)
+        log("tagged:", entry["title"], " ".join(tags))
 
 
 def poll_feeds(db):
@@ -463,6 +545,9 @@ def send_help(chat_id):
             "/addfeed label | <url>",
             "/delfeed <url>",
             "/exportfeeds",
+            "/addtag <tag>",
+            "/deltag <tag>",
+            "/listtags",
             "/summary",
             "/testfeed <url>",
             "/testall",
@@ -544,6 +629,42 @@ def handle_exportfeeds(db, chat_id):
     http_post_multipart(url, {"chat_id": chat_id}, "feeds.txt", content)
 
 
+def handle_addtag(db, chat_id, tag):
+    if not tag:
+        send_message(chat_id, "usage: /addtag <tag>")
+        return
+    tag = tag.strip().lower()
+    existing = db.execute("select id from tags where tag = ?", (tag,)).fetchone()
+    if existing:
+        send_message(chat_id, "tag already exists")
+        return
+    db.execute("insert into tags(tag) values(?)", (tag,))
+    db.commit()
+    send_message(chat_id, f"tag added: {tag}")
+
+
+def handle_deltag(db, chat_id, tag):
+    if not tag:
+        send_message(chat_id, "usage: /deltag <tag>")
+        return
+    tag = tag.strip().lower()
+    row = db.execute("select id from tags where tag = ?", (tag,)).fetchone()
+    if not row:
+        send_message(chat_id, "tag not found")
+        return
+    db.execute("delete from tags where tag = ?", (tag,))
+    db.commit()
+    send_message(chat_id, f"tag removed: {tag}")
+
+
+def handle_listtags(db, chat_id):
+    rows = db.execute("select tag from tags order by tag asc").fetchall()
+    if not rows:
+        send_message(chat_id, "no tags")
+        return
+    send_message(chat_id, "\n".join("#"+row["tag"] for row in rows))
+
+
 def handle_testsend(db, chat_id):
     entry = {
         "key": f"test:{int(time.time())}",
@@ -598,7 +719,17 @@ def handle_testall(db, chat_id):
         if not entries:
             send_message(chat_id, f"{feed_display_name(feed['label'], feed['url'])}\n\nno entries")
             continue
-        send_preview_item(chat_id, feed_display_name(feed["label"], feed["url"]), entries[0])
+        entry = entries[0]
+        feed_name = feed_display_name(feed["label"], feed["url"])
+        text = format_item(feed_name, entry)
+        if GEMINI_API_KEY:
+            try:
+                tags = auto_tag_item(db, feed["url"], entry)
+                if tags:
+                    text += f"\n\ntags: {' '.join(tags)}"
+            except Exception as e:
+                text += f"\n\ntags: error ({e})"
+        send_message(chat_id, text)
         time.sleep(1)
 
 
@@ -745,10 +876,13 @@ def render_index():
     db = open_db()
     items = db.execute(
         """
-        select title, url, published, seen_at, feed_url, trello_saved, trello_card_url
-        from items
-        where sent_message_id is not null
-        order by seen_at desc
+        select i.title, i.url, i.published, i.seen_at, i.feed_url, i.trello_saved, i.trello_card_url,
+               group_concat(it.tag, ' ') as tags
+        from items i
+        left join item_tags it on it.item_id = i.id
+        where i.sent_message_id is not null
+        group by i.id
+        order by i.seen_at desc
         limit 10
         """
     ).fetchall()
@@ -867,10 +1001,18 @@ def render_index():
         if row["trello_saved"] and row["trello_card_url"]:
             card_url = escape(safe_href(row["trello_card_url"]))
             trello = f' <a class="tag" href="{card_url}">trello</a>'
+        tag_badges = ""
+        if row["tags"]:
+            tag_badges = "".join(
+                f'<span class="tag">#{escape(t)}</span>'
+                for t in row["tags"].split(" ")
+            )
         body.append("<article>")
         body.append(f'<h2><a href="{url}">{title}</a>{trello}</h2>')
         body.append(f'<div class="meta">seen: {seen}</div>')
         body.append(f'<div class="meta">{feed_url}</div>')
+        if tag_badges:
+            body.append(f'<div class="meta">{tag_badges}</div>')
         body.append("</article>")
     body.append("<div class=\"section\">Feeds</div>")
     body.append("<table>")
@@ -964,6 +1106,12 @@ def handle_message(db, update):
         handle_delfeed(db, chat_id, arg)
     elif cmd == "/exportfeeds":
         handle_exportfeeds(db, chat_id)
+    elif cmd == "/addtag":
+        handle_addtag(db, chat_id, arg)
+    elif cmd == "/deltag":
+        handle_deltag(db, chat_id, arg)
+    elif cmd == "/listtags":
+        handle_listtags(db, chat_id)
     elif cmd == "/summary":
         handle_summary(db, chat_id)
     elif cmd == "/testfeed":
