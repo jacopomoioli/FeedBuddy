@@ -38,24 +38,33 @@ The following commands are available via Telegram:
 
 - `/help`: list the available commands
 - `/listfeeds`: list the loaded RSS feeds
-- `/addfeed label | <url>`: add a new RSS feed with label.
+- `/addfeed label | <url>`: add a new RSS feed with an optional label
 - `/delfeed <url>`: delete an existing RSS feed
-- `/summary`: list ever post published today
+- `/exportfeeds`: download the current feed list as a `feeds.txt` attachment
+- `/summary`: list every post published today
 - `/testfeed <url>`: fetch and send the latest post of one feed
 - `/testall`: fetch and send the latest post of every configured feed
 - `/testsend`: send a test post
 
+## CLI
+
+```bash
+python3 feedbuddy.py import <file>
+```
+
+Additive, skips existing URLs.
+
 ## Web Interface
 The web interface runs on http://127.0.0.1:8080 (default configuration).
 
-The loading of the page could take a while, because it queries every rss feed and gets the last publishing timestamp. Here's a screenshot:
+Here's a screenshot:
 
 ![Web Page screenshot](https://github.com/user-attachments/assets/6361c7fd-4563-4f45-8cee-22db17ba7fde)
 
 
 ## Why
-There are a lot of different RSS solutions out there, i tried some of them but none felt right.
+There are a lot of different RSS solutions out there, i tried some of them but none felt right for me.
 
 I also wanted to move important stuff on another channel (like trello) to avoid losing them. I was inspired by some [Cal Newport's videos](https://www.youtube.com/watch?v=FiLYCq0SfN4).
 
-Also, most of the code was written by Codex. I wanted to build a small project to test coding agents, because being against them without having even tried is stupid (guilty of that, but as you can see I'm working on it).
+Also, most of the code was written using Claude Code & Codex. I wanted to build a small project to test the capabilities of coding agents. 

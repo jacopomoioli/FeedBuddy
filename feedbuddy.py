@@ -19,7 +19,6 @@ import feedparser
 
 
 DB_PATH = "feedbuddy.db"
-SOURCES_PATH = "sources.txt"
 USER_AGENT = "FeedBuddy/0.1"
 CHECK_EVERY = 300
 TELEGRAM_TIMEOUT = 50
@@ -244,11 +243,11 @@ def parse_source_line(line):
     return {"label": None, "url": line.strip()}
 
 
-def read_sources_file():
-    if not os.path.exists(SOURCES_PATH):
+def read_sources_file(path):
+    if not os.path.exists(path):
         return []
     rows = []
-    with open(SOURCES_PATH, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -990,12 +989,8 @@ def main():
         poll_telegram(db)
 
 
-def cmd_import(path=SOURCES_PATH):
-    sources = read_sources_file() if path == SOURCES_PATH else [
-        parse_source_line(line.strip())
-        for line in open(path, encoding="utf-8")
-        if line.strip() and not line.startswith("#")
-    ]
+def cmd_import(path):
+    sources = read_sources_file(path)
     if not sources:
         print("no sources found in", path)
         sys.exit(1)
@@ -1014,6 +1009,9 @@ def cmd_import(path=SOURCES_PATH):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "import":
-        cmd_import(sys.argv[2] if len(sys.argv) > 2 else SOURCES_PATH)
+        if len(sys.argv) < 3:
+            print("usage: feedbuddy.py import <file>")
+            sys.exit(1)
+        cmd_import(sys.argv[2])
     else:
         main()
