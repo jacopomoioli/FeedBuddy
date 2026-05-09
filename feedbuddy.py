@@ -899,11 +899,36 @@ def render_index():
     body.append("<style>")
     body.append(
         """
-        :root { color-scheme: light; }
+        :root {
+            --bg: #f4efe7;
+            --fg: #1e1b18;
+            --muted: #6f655c;
+            --card-bg: #fffdf9;
+            --card-border: #d8cfc4;
+            --row-border: #e7ddd1;
+            --link: #0f5c4d;
+            --tag-bg: #e3f1eb;
+            --tag-fg: #0f5c4d;
+            --stale-bg: #fde8cc;
+            --stale-fg: #8a4e00;
+        }
+        body.dark {
+            --bg: #1a1a1a;
+            --fg: #e8e2d9;
+            --muted: #9a9088;
+            --card-bg: #242424;
+            --card-border: #3a3530;
+            --row-border: #333;
+            --link: #4db89a;
+            --tag-bg: #1e3329;
+            --tag-fg: #4db89a;
+            --stale-bg: #3d2a10;
+            --stale-fg: #f0a84a;
+        }
         body {
             margin: 0;
-            background: #f4efe7;
-            color: #1e1b18;
+            background: var(--bg);
+            color: var(--fg);
             font: 16px/1.5 Georgia, serif;
         }
         main {
@@ -915,8 +940,23 @@ def render_index():
             margin: 0 0 8px;
             font-size: 36px;
         }
+        .header {
+            display: flex;
+            align-items: baseline;
+            gap: 16px;
+            margin-bottom: 4px;
+        }
+        .toggle {
+            font: 13px/1 Georgia, serif;
+            color: var(--muted);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0;
+        }
+        .toggle:hover { color: var(--fg); }
         .sub {
-            color: #6f655c;
+            color: var(--muted);
             margin-bottom: 28px;
         }
         .section {
@@ -924,8 +964,8 @@ def render_index():
             font-size: 24px;
         }
         article {
-            background: #fffdf9;
-            border: 1px solid #d8cfc4;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
             padding: 18px 18px 16px;
             margin-bottom: 14px;
             box-shadow: 0 1px 0 rgba(0,0,0,0.03);
@@ -936,10 +976,10 @@ def render_index():
             line-height: 1.25;
         }
         a {
-            color: #0f5c4d;
+            color: var(--link);
         }
         .meta {
-            color: #6f655c;
+            color: var(--muted);
             font-size: 14px;
             margin-top: 10px;
         }
@@ -948,36 +988,36 @@ def render_index():
             margin-left: 8px;
             padding: 1px 7px;
             border-radius: 999px;
-            background: #e3f1eb;
-            color: #0f5c4d;
+            background: var(--tag-bg);
+            color: var(--tag-fg);
             font-size: 12px;
             vertical-align: middle;
         }
         table {
             width: 100%;
             border-collapse: collapse;
-            background: #fffdf9;
-            border: 1px solid #d8cfc4;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
         }
         th, td {
             padding: 10px 12px;
             text-align: left;
             vertical-align: top;
-            border-bottom: 1px solid #e7ddd1;
+            border-bottom: 1px solid var(--row-border);
         }
         th {
             font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            color: #6f655c;
+            color: var(--muted);
         }
         .stale {
             display: inline-block;
             margin-left: 8px;
             padding: 1px 7px;
             border-radius: 999px;
-            background: #fde8cc;
-            color: #8a4e00;
+            background: var(--stale-bg);
+            color: var(--stale-fg);
             font-size: 12px;
             vertical-align: middle;
         }
@@ -987,7 +1027,7 @@ def render_index():
     body.append("</head>")
     body.append("<body>")
     body.append("<main>")
-    body.append("<h1>FeedBuddy</h1>")
+    body.append('<div class="header"><h1>FeedBuddy</h1><button class="toggle" id="theme-toggle"></button></div>')
     body.append("<div class=\"sub\">Last 10 sent articles, newest first.</div>")
     body.append("<div class=\"section\">Recent posts</div>")
     if not items:
@@ -1028,9 +1068,23 @@ def render_index():
                 days = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).days
                 if days > STALE_DAYS:
                     stale_badge = f' <span class="stale">{days}d</span>'
-        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{last_published}{stale_badge}</td></tr>')
+        parsed = urllib.parse.urlparse(row["url"])
+        favicon_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+        favicon = f'<img src="{favicon_url}" width="16" height="16" style="vertical-align:middle;margin-right:6px;" onerror="this.style.visibility=\'hidden\'">'
+        body.append(f'<tr><td>{favicon}<a href="{url}">{title}</a></td><td>{last_published}{stale_badge}</td></tr>')
     body.append("</table>")
     body.append("</main>")
+    body.append("""<script>
+const b = document.body, btn = document.getElementById('theme-toggle');
+if (localStorage.getItem('dark') === '1') b.classList.add('dark');
+btn.textContent = b.classList.contains('dark') ? 'light mode' : 'dark mode';
+btn.onclick = () => {
+    b.classList.toggle('dark');
+    const d = b.classList.contains('dark') ? '1' : '0';
+    localStorage.setItem('dark', d);
+    btn.textContent = d === '1' ? 'light mode' : 'dark mode';
+};
+</script>""")
     body.append("</body>")
     body.append("</html>")
     return "\n".join(body).encode()
