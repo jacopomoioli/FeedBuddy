@@ -71,6 +71,7 @@ TRELLO_TOKEN = env("TRELLO_TOKEN")
 TRELLO_LIST_ID = env("TRELLO_LIST_ID")
 WEB_HOST = env("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(env("WEB_PORT", "8080"))
+STALE_DAYS = int(env("STALE_DAYS", "60"))
 
 
 def trello_enabled():
@@ -95,6 +96,9 @@ def open_db():
     colnames = {row[1] for row in cols}
     if "label" not in colnames:
         db.execute("alter table feeds add column label text")
+    item_cols = {row[1] for row in db.execute("pragma table_info(items)").fetchall()}
+    if "published_ts" not in item_cols:
+        db.execute("alter table items add column published_ts text")
     db.execute(
         """
         create table if not exists items (
@@ -281,11 +285,14 @@ def normalize_entry(entry):
         or entry.get("created")
         or ""
     ).strip()
+    tp = entry.get("published_parsed") or entry.get("updated_parsed")
+    published_ts = datetime(*tp[:6], tzinfo=timezone.utc).isoformat() if tp else None
     return {
         "key": key,
         "title": title,
         "link": link,
         "published": published,
+        "published_ts": published_ts,
     }
 
 
@@ -324,10 +331,10 @@ def ensure_feed(db, url, label=None, catch_up=False):
         for entry in entries:
             db.execute(
                 """
-                insert or ignore into items(feed_url, item_key, title, url, published, seen_at)
-                values(?, ?, ?, ?, ?, ?)
+                insert or ignore into items(feed_url, item_key, title, url, published, published_ts, seen_at)
+                values(?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, entry["key"], entry["title"], entry["link"], entry["published"], now()),
+                (url, entry["key"], entry["title"], entry["link"], entry["published"], entry.get("published_ts"), now()),
             )
     db.commit()
     return True
@@ -371,8 +378,8 @@ def format_item(feed_name, entry):
 def send_feed_item(db, feed_url, feed_name, entry):
     db.execute(
         """
-        insert or ignore into items(feed_url, item_key, title, url, published, seen_at)
-        values(?, ?, ?, ?, ?, ?)
+        insert or ignore into items(feed_url, item_key, title, url, published, published_ts, seen_at)
+        values(?, ?, ?, ?, ?, ?, ?)
         """,
         (
             feed_url,
@@ -380,6 +387,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
             entry["title"],
             entry["link"],
             entry["published"],
+            entry.get("published_ts"),
             now(),
         ),
     )
@@ -723,11 +731,12 @@ def safe_href(url):
 def feed_status_rows(db):
     return db.execute(
         """
-        select f.url, f.label, f.title, max(i.seen_at) as last_seen
+        select f.url, f.label, f.title,
+               (select i.published_ts from items i
+                where i.feed_url = f.url and i.published_ts is not null
+                order by i.published_ts desc limit 1) as last_published_ts
         from feeds f
-        left join items i on i.feed_url = f.url
-        group by f.url
-        order by f.url
+        order by last_published_ts desc
         """
     ).fetchall()
 
@@ -828,6 +837,16 @@ def render_index():
             letter-spacing: 0.04em;
             color: #6f655c;
         }
+        .stale {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 1px 7px;
+            border-radius: 999px;
+            background: #fde8cc;
+            color: #8a4e00;
+            font-size: 12px;
+            vertical-align: middle;
+        }
         """
     )
     body.append("</style>")
@@ -859,8 +878,15 @@ def render_index():
     for row in feeds:
         title = escape(feed_display_name(row["label"], row["url"]))
         url = escape(safe_href(row["url"]))
-        last_seen = escape(fmt_time(row["last_seen"]) if row["last_seen"] else "never")
-        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{last_seen}</td></tr>')
+        last_published = escape(fmt_time(row["last_published_ts"]) if row["last_published_ts"] else "never")
+        stale_badge = ""
+        if row["last_published_ts"]:
+            dt = parse_date(row["last_published_ts"])
+            if dt:
+                days = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).days
+                if days > STALE_DAYS:
+                    stale_badge = f' <span class="stale">{days}d</span>'
+        body.append(f'<tr><td><a href="{url}">{title}</a></td><td>{last_published}{stale_badge}</td></tr>')
     body.append("</table>")
     body.append("</main>")
     body.append("</body>")
@@ -977,8 +1003,25 @@ def poll_telegram(db):
             log("update handling failed:", e)
 
 
+def backfill_published_ts(db):
+    rows = db.execute(
+        "select id, published from items where published_ts is null and published != ''"
+    ).fetchall()
+    for row in rows:
+        dt = parse_date(row["published"])
+        if dt:
+            db.execute(
+                "update items set published_ts = ? where id = ?",
+                (dt.astimezone(timezone.utc).isoformat(), row["id"]),
+            )
+    if rows:
+        db.commit()
+        log(f"backfilled published_ts for {len(rows)} items")
+
+
 def main():
     db = open_db()
+    backfill_published_ts(db)
     start_web()
     next_feed_check = 0
     log("started")
