@@ -476,7 +476,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
     if trello_enabled():
         markup = {
             "inline_keyboard": [
-                [{"text": "Save to Trello", "callback_data": f"save:{item_id}"}]
+                [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
             ]
         }
     msg = send_message(TARGET_CHAT_ID, text, markup)
@@ -886,6 +886,18 @@ def render_index():
         limit 10
         """
     ).fetchall()
+    saved_items = db.execute(
+        """
+        select i.title, i.url, i.seen_at, i.feed_url,
+               group_concat(it.tag, ' ') as tags
+        from items i
+        left join item_tags it on it.item_id = i.id
+        where i.trello_saved = 1
+        group by i.id
+        order by i.seen_at desc
+        limit 30
+        """
+    ).fetchall()
     feeds = feed_status_rows(db)
     feed_names = {row["url"]: feed_display_name(row["label"], row["url"]) for row in feeds}
     db.close()
@@ -911,6 +923,8 @@ def render_index():
             --tag-fg: #0f5c4d;
             --stale-bg: #fde8cc;
             --stale-fg: #8a4e00;
+            --saved-bg: #e8f0fe;
+            --saved-fg: #1a56c4;
         }
         body.dark {
             --bg: #1a1a1a;
@@ -924,6 +938,8 @@ def render_index():
             --tag-fg: #4db89a;
             --stale-bg: #3d2a10;
             --stale-fg: #f0a84a;
+            --saved-bg: #1a2a4a;
+            --saved-fg: #7aaaff;
         }
         body {
             margin: 0;
@@ -932,7 +948,7 @@ def render_index():
             font: 16px/1.5 Georgia, serif;
         }
         main {
-            max-width: 760px;
+            max-width: 1140px;
             margin: 0 auto;
             padding: 32px 18px 60px;
         }
@@ -959,9 +975,21 @@ def render_index():
             color: var(--muted);
             margin-bottom: 28px;
         }
+        .columns {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 28px;
+            align-items: start;
+        }
+        @media (max-width: 720px) {
+            .columns { grid-template-columns: 1fr; }
+        }
         .section {
-            margin: 30px 0 14px;
+            margin: 0 0 14px;
             font-size: 24px;
+        }
+        .col-side .section {
+            margin-top: 0;
         }
         article {
             background: var(--card-bg);
@@ -970,10 +998,17 @@ def render_index():
             margin-bottom: 14px;
             box-shadow: 0 1px 0 rgba(0,0,0,0.03);
         }
+        .col-side article {
+            padding: 12px 14px 10px;
+        }
         h2 {
             margin: 0 0 8px;
             font-size: 22px;
             line-height: 1.25;
+        }
+        .col-side h2 {
+            font-size: 16px;
+            margin-bottom: 4px;
         }
         a {
             color: var(--link);
@@ -982,6 +1017,10 @@ def render_index():
             color: var(--muted);
             font-size: 14px;
             margin-top: 10px;
+        }
+        .col-side .meta {
+            font-size: 12px;
+            margin-top: 4px;
         }
         .tag {
             display: inline-block;
@@ -992,6 +1031,22 @@ def render_index():
             color: var(--tag-fg);
             font-size: 12px;
             vertical-align: middle;
+        }
+        .badge-saved {
+            display: inline-block;
+            margin-left: 8px;
+            padding: 1px 7px;
+            border-radius: 999px;
+            background: var(--saved-bg);
+            color: var(--saved-fg);
+            font-size: 12px;
+            vertical-align: middle;
+        }
+        .feeds-section {
+            margin-top: 40px;
+        }
+        .feeds-section .section {
+            margin-bottom: 14px;
         }
         table {
             width: 100%;
@@ -1028,8 +1083,12 @@ def render_index():
     body.append("<body>")
     body.append("<main>")
     body.append('<div class="header"><h1>FeedBuddy</h1><button class="toggle" id="theme-toggle"></button></div>')
-    body.append("<div class=\"sub\">Last 10 sent articles, newest first.</div>")
-    body.append("<div class=\"section\">Recent posts</div>")
+    body.append('<div class="sub">Last 10 sent articles, newest first.</div>')
+    body.append('<div class="columns">')
+
+    # left column — recent posts
+    body.append('<div class="col-main">')
+    body.append('<div class="section">Recent posts</div>')
     if not items:
         body.append("<article><h2>No articles yet.</h2></article>")
     for row in items:
@@ -1037,10 +1096,9 @@ def render_index():
         url = escape(safe_href(row["url"]))
         feed_url = escape(feed_names.get(row["feed_url"], row["feed_url"] or ""))
         seen = escape(fmt_time(row["seen_at"]))
-        trello = ""
-        if row["trello_saved"] and row["trello_card_url"]:
-            card_url = escape(safe_href(row["trello_card_url"]))
-            trello = f' <a class="tag" href="{card_url}">trello</a>'
+        saved_badge = ""
+        if row["trello_saved"]:
+            saved_badge = ' <span class="badge-saved">saved</span>'
         tag_badges = ""
         if row["tags"]:
             tag_badges = "".join(
@@ -1048,13 +1106,43 @@ def render_index():
                 for t in row["tags"].split(" ")
             )
         body.append("<article>")
-        body.append(f'<h2><a href="{url}">{title}</a>{trello}</h2>')
+        body.append(f'<h2><a href="{url}">{title}</a>{saved_badge}</h2>')
         body.append(f'<div class="meta">seen: {seen}</div>')
         body.append(f'<div class="meta">{feed_url}</div>')
         if tag_badges:
             body.append(f'<div class="meta">{tag_badges}</div>')
         body.append("</article>")
-    body.append("<div class=\"section\">Feeds</div>")
+    body.append("</div>")  # col-main
+
+    # right column — saved posts
+    body.append('<div class="col-side">')
+    body.append('<div class="section">Saved</div>')
+    if not saved_items:
+        body.append("<article><h2>Nothing saved yet.</h2></article>")
+    for row in saved_items:
+        title = escape(row["title"] or "(no title)")
+        url = escape(safe_href(row["url"]))
+        feed_name = escape(feed_names.get(row["feed_url"], row["feed_url"] or ""))
+        seen = escape(fmt_time(row["seen_at"]))
+        tag_badges = ""
+        if row["tags"]:
+            tag_badges = "".join(
+                f'<span class="tag">#{escape(t)}</span>'
+                for t in row["tags"].split(" ")
+            )
+        body.append("<article>")
+        body.append(f'<h2><a href="{url}">{title}</a></h2>')
+        body.append(f'<div class="meta">{feed_name}</div>')
+        body.append(f'<div class="meta">{seen}</div>')
+        if tag_badges:
+            body.append(f'<div class="meta">{tag_badges}</div>')
+        body.append("</article>")
+    body.append("</div>")  # col-side
+
+    body.append("</div>")  # columns
+
+    body.append('<div class="feeds-section">')
+    body.append('<div class="section">Feeds</div>')
     body.append("<table>")
     body.append("<tr><th>Feed</th><th>Last post</th></tr>")
     for row in feeds:
@@ -1069,10 +1157,11 @@ def render_index():
                 if days > STALE_DAYS:
                     stale_badge = f' <span class="stale">{days}d</span>'
         parsed = urllib.parse.urlparse(row["url"])
-        favicon_url = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+        favicon_url = escape(f"{parsed.scheme}://{parsed.netloc}/favicon.ico")
         favicon = f'<img src="{favicon_url}" width="16" height="16" style="vertical-align:middle;margin-right:6px;" onerror="this.style.visibility=\'hidden\'">'
         body.append(f'<tr><td>{favicon}<a href="{url}">{title}</a></td><td>{last_published}{stale_badge}</td></tr>')
     body.append("</table>")
+    body.append("</div>")  # feeds-section
     body.append("</main>")
     body.append("""<script>
 const b = document.body, btn = document.getElementById('theme-toggle');
@@ -1117,27 +1206,56 @@ def start_web():
     return server
 
 
+def edit_reply_markup(chat_id, message_id, markup):
+    try:
+        tg_api("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": markup,
+        })
+    except Exception as e:
+        log("editMessageReplyMarkup failed:", e)
+
+
 def handle_callback_query(db, update):
     cb = update["callback_query"]
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
+    message_id = cb.get("message", {}).get("message_id")
     if not chat_allowed(chat_id):
         return
     data = cb.get("data") or ""
-    if not data.startswith("save:"):
+
+    if data.startswith("save:"):
+        item_id = data.split(":", 1)[1]
+        row = db.execute("select id from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            answer_callback_query(cb["id"], "item not found")
+            return
+        try:
+            save_item_to_trello(db, row["id"])
+            answer_callback_query(cb["id"], "saved")
+            edit_reply_markup(chat_id, message_id, {
+                "inline_keyboard": [[{"text": "Remove from later", "callback_data": f"unsave:{row['id']}"}]]
+            })
+        except Exception as e:
+            log("save failed:", e)
+            answer_callback_query(cb["id"], "save failed")
+
+    elif data.startswith("unsave:"):
+        item_id = data.split(":", 1)[1]
+        row = db.execute("select id from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            answer_callback_query(cb["id"], "item not found")
+            return
+        db.execute("update items set trello_saved = 0, trello_card_url = null where id = ?", (row["id"],))
+        db.commit()
+        answer_callback_query(cb["id"], "removed")
+        edit_reply_markup(chat_id, message_id, {
+            "inline_keyboard": [[{"text": "Save for later", "callback_data": f"save:{row['id']}"}]]
+        })
+
+    else:
         answer_callback_query(cb["id"], "unknown action")
-        return
-    item_id = data.split(":", 1)[1]
-    row = db.execute("select id from items where id = ?", (item_id,)).fetchone()
-    if not row:
-        answer_callback_query(cb["id"], "item not found")
-        return
-    try:
-        card_url = save_item_to_trello(db, row["id"])
-        answer_callback_query(cb["id"], "saved")
-        send_message(cb["message"]["chat"]["id"], card_url)
-    except Exception as e:
-        log("trello save failed:", e)
-        answer_callback_query(cb["id"], "save failed")
 
 
 def handle_message(db, update):
