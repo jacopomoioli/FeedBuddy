@@ -545,6 +545,7 @@ def send_help(chat_id):
             "/addfeed label | <url>",
             "/delfeed <url>",
             "/exportfeeds",
+            "/listsaved",
             "/addtag <tag>",
             "/deltag <tag>",
             "/listtags",
@@ -655,6 +656,40 @@ def handle_deltag(db, chat_id, tag):
     db.execute("delete from tags where tag = ?", (tag,))
     db.commit()
     send_message(chat_id, f"tag removed: {tag}")
+
+
+def handle_listsaved(db, chat_id):
+    rows = db.execute(
+        """
+        select i.title, i.url, f.label, f.url as feed_url
+        from items i
+        left join feeds f on f.url = i.feed_url
+        where i.trello_saved = 1
+        order by i.seen_at desc
+        """
+    ).fetchall()
+    if not rows:
+        send_message(chat_id, "no saved items")
+        return
+    lines = []
+    for row in rows:
+        title = html_escape(row["title"] or "(no title)")
+        url = html_escape(row["url"] or "")
+        feed_name = html_escape(feed_display_name(row["label"], row["feed_url"] or ""))
+        lines.append(f"<b><a href=\"{url}\">{title}</a></b>")
+        lines.append(f"<i>{feed_name}</i>")
+        lines.append("")
+    chunk = []
+    size = 0
+    for line in lines:
+        if size + len(line) + 1 > 3500:
+            send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
+            chunk = []
+            size = 0
+        chunk.append(line)
+        size += len(line) + 1
+    if chunk:
+        send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
 
 
 def handle_listtags(db, chat_id):
@@ -1278,6 +1313,8 @@ def handle_message(db, update):
         handle_delfeed(db, chat_id, arg)
     elif cmd == "/exportfeeds":
         handle_exportfeeds(db, chat_id)
+    elif cmd == "/listsaved":
+        handle_listsaved(db, chat_id)
     elif cmd == "/addtag":
         handle_addtag(db, chat_id, arg)
     elif cmd == "/deltag":
