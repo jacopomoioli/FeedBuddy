@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import html as html_module
 import json
 import os
 import re
@@ -55,6 +56,20 @@ def log(*args):
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), *args, flush=True)
 
 
+def strip_html(text):
+    """Strip HTML tags and decode entities, returning plain text."""
+    from html.parser import HTMLParser
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._parts = []
+        def handle_data(self, data):
+            self._parts.append(data)
+    p = _P()
+    p.feed(text)
+    return " ".join(p._parts).strip()
+
+
 def env(name, default=None, required=False):
     value = os.getenv(name, default)
     if required and not value:
@@ -102,8 +117,10 @@ def open_db():
     if "label" not in colnames:
         db.execute("alter table feeds add column label text")
     item_cols = {row[1] for row in db.execute("pragma table_info(items)").fetchall()}
-    if "published_ts" not in item_cols:
+    if item_cols and "published_ts" not in item_cols:
         db.execute("alter table items add column published_ts text")
+    if item_cols and "summary" not in item_cols:
+        db.execute("alter table items add column summary text")
     db.execute(
         """
         create table if not exists items (
@@ -113,6 +130,7 @@ def open_db():
             title text,
             url text,
             published text,
+            summary text,
             sent_chat_id text,
             sent_message_id integer,
             trello_saved integer not null default 0,
@@ -255,6 +273,7 @@ def auto_tag_item(db, feed_url, entry):
         f"title: {entry.get('title') or ''}",
         f"url: {entry.get('link') or entry.get('url') or ''}",
         f"source: {feed_name}",
+        f"summary: {entry.get('summary') or ''}",
     ])
     prompt = (
         f"Post:\n{post_info}\n\n"
@@ -358,12 +377,15 @@ def normalize_entry(entry):
     ).strip()
     tp = entry.get("published_parsed") or entry.get("updated_parsed")
     published_ts = datetime(*tp[:6], tzinfo=timezone.utc).isoformat() if tp else None
+    raw_summary = entry.get("summary") or ""
+    summary = strip_html(raw_summary)[:300].strip() if raw_summary else ""
     return {
         "key": key,
         "title": title,
         "link": link,
         "published": published,
         "published_ts": published_ts,
+        "summary": summary,
     }
 
 
@@ -397,10 +419,10 @@ def ensure_feed(db, url, label=None, catch_up=False):
         for entry in entries:
             db.execute(
                 """
-                insert or ignore into items(feed_url, item_key, title, url, published, published_ts, seen_at)
-                values(?, ?, ?, ?, ?, ?, ?)
+                insert or ignore into items(feed_url, item_key, title, url, published, published_ts, summary, seen_at)
+                values(?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, entry["key"], entry["title"], entry["link"], entry["published"], entry.get("published_ts"), now()),
+                (url, entry["key"], entry["title"], entry["link"], entry["published"], entry.get("published_ts"), entry.get("summary"), now()),
             )
     db.commit()
     return True
@@ -432,20 +454,22 @@ def unsent_new_items(db, feed_url, entries):
 
 
 def format_item(feed_name, entry):
+    parts = []
     if feed_name:
-        return f"""{feed_name}: {entry["title"]}
-
-{entry["link"]}"""
-    return f"""{entry["title"]}
-
-{entry["link"]}"""
+        parts.append(f"<i>{html_escape(feed_name)}</i>")
+    parts.append(f"<b>{html_escape(entry['title'])}</b>")
+    summary = entry.get("summary") or ""
+    if summary:
+        parts.append(html_escape(summary))
+    parts.append(entry["link"])
+    return "\n\n".join(parts)
 
 
 def send_feed_item(db, feed_url, feed_name, entry):
     db.execute(
         """
-        insert or ignore into items(feed_url, item_key, title, url, published, published_ts, seen_at)
-        values(?, ?, ?, ?, ?, ?, ?)
+        insert or ignore into items(feed_url, item_key, title, url, published, published_ts, summary, seen_at)
+        values(?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             feed_url,
@@ -454,6 +478,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
             entry["link"],
             entry["published"],
             entry.get("published_ts"),
+            entry.get("summary"),
             now(),
         ),
     )
@@ -475,11 +500,11 @@ def send_feed_item(db, feed_url, feed_name, entry):
                 [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
             ]
         }
-    msg = send_message(TARGET_CHAT_ID, text, markup)
+    msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
     db.execute(
         """
         update items
-        set sent_chat_id = ?, sent_message_id = ?, title = ?, url = ?, published = ?
+        set sent_chat_id = ?, sent_message_id = ?, title = ?, url = ?, published = ?, summary = ?
         where feed_url = ? and item_key = ?
         """,
         (
@@ -488,6 +513,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
             entry["title"],
             entry["link"],
             entry["published"],
+            entry.get("summary"),
             feed_url, entry["key"],
         ),
     )
@@ -759,7 +785,7 @@ def handle_testsend(db, chat_id):
 
 
 def send_preview_item(chat_id, feed_name, entry):
-    send_message(chat_id, format_item(feed_name, entry))
+    send_message(chat_id, format_item(feed_name, entry), parse_mode="HTML")
 
 
 def handle_testfeed(db, chat_id, url):
@@ -808,7 +834,7 @@ def handle_testall(db, chat_id):
                     text += f"\n\ntags: {' '.join(tags)}"
             except Exception as e:
                 text += f"\n\ntags: error ({e})"
-        send_message(chat_id, text)
+        send_message(chat_id, text, parse_mode="HTML")
         time.sleep(1)
 
 
@@ -956,7 +982,7 @@ def render_index():
     items = db.execute(
         """
         select i.title, i.url, i.published, i.seen_at, i.feed_url, i.trello_saved, i.trello_card_url,
-               group_concat(it.tag, ' ') as tags
+               i.summary, group_concat(it.tag, ' ') as tags
         from items i
         left join item_tags it on it.item_id = i.id
         where i.sent_message_id is not null
@@ -967,7 +993,7 @@ def render_index():
     ).fetchall()
     saved_items = db.execute(
         """
-        select i.title, i.url, i.seen_at, i.feed_url,
+        select i.title, i.url, i.seen_at, i.feed_url, i.summary,
                group_concat(it.tag, ' ') as tags
         from items i
         left join item_tags it on it.item_id = i.id
@@ -1092,6 +1118,15 @@ def render_index():
         a {
             color: var(--link);
         }
+        .summary {
+            margin: 8px 0 0;
+            font-size: 15px;
+            color: var(--fg);
+            line-height: 1.45;
+        }
+        .col-side .summary {
+            font-size: 13px;
+        }
         .meta {
             color: var(--muted);
             font-size: 14px;
@@ -1184,8 +1219,11 @@ def render_index():
                 f'<span class="tag">#{escape(t)}</span>'
                 for t in row["tags"].split(" ")
             )
+        summary = escape(row["summary"] or "")
         body.append("<article>")
         body.append(f'<h2><a href="{url}">{title}</a>{saved_badge}</h2>')
+        if summary:
+            body.append(f'<p class="summary">{summary}</p>')
         body.append(f'<div class="meta">seen: {seen}</div>')
         body.append(f'<div class="meta">{feed_url}</div>')
         if tag_badges:
@@ -1209,8 +1247,11 @@ def render_index():
                 f'<span class="tag">#{escape(t)}</span>'
                 for t in row["tags"].split(" ")
             )
+        summary = escape(row["summary"] or "")
         body.append("<article>")
         body.append(f'<h2><a href="{url}">{title}</a></h2>')
+        if summary:
+            body.append(f'<p class="summary">{summary}</p>')
         body.append(f'<div class="meta">{feed_name}</div>')
         body.append(f'<div class="meta">{seen}</div>')
         if tag_badges:
