@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -387,12 +388,7 @@ def ensure_feed(db, url, label=None, catch_up=False):
             db.execute("update feeds set label = ? where url = ?", (label, url))
             db.commit()
         return False
-    title = url
-    try:
-        title, entries = fetch_feed(url)
-    except Exception as e:
-        log("cannot fetch feed during import:", url, e)
-        entries = []
+    title, entries = fetch_feed(url)
     db.execute(
         "insert into feeds(url, label, title, added_at) values(?, ?, ?, ?)",
         (url, label, title, now()),
@@ -558,6 +554,42 @@ def send_help(chat_id):
     send_message(chat_id, text)
 
 
+_YT_FEED_BASE = "https://www.youtube.com/feeds/videos.xml"
+_YT_SCRAPE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def is_youtube_channel_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc not in ("www.youtube.com", "youtube.com"):
+        return False
+    if parsed.path.startswith("/feeds/"):
+        return False
+    return bool(re.match(r"^(/(@[\w.-]+)|/channel/[\w-]+|/user/[\w.-]+)$", parsed.path))
+
+
+def resolve_youtube_feed(url):
+    parsed = urllib.parse.urlparse(url)
+    # /channel/UCxxxxx — channel ID already present
+    m = re.match(r"^/channel/(UC[\w-]+)$", parsed.path)
+    if m:
+        return f"{_YT_FEED_BASE}?channel_id={m.group(1)}"
+    # /@handle or /user/name — scrape the page for the RSS <link> tag
+    req = urllib.request.Request(url, headers={"User-Agent": _YT_SCRAPE_UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        html = r.read().decode("utf-8", errors="replace")
+    m = re.search(
+        r'href="(https://www\.youtube\.com/feeds/videos\.xml\?channel_id=[^"]+)"',
+        html,
+    )
+    if not m:
+        raise RuntimeError("RSS feed link not found in YouTube page")
+    return m.group(1)
+
+
 def handle_addfeed(db, chat_id, url):
     row = parse_source_line(url)
     label = row["label"]
@@ -565,12 +597,24 @@ def handle_addfeed(db, chat_id, url):
     if not url.startswith(("http://", "https://")):
         send_message(chat_id, "bad url")
         return
+    resolved_yt_url = None
+    if is_youtube_channel_url(url):
+        try:
+            resolved_yt_url = resolve_youtube_feed(url)
+            log("resolved youtube url:", url, "->", resolved_yt_url)
+            url = resolved_yt_url
+        except Exception as e:
+            send_message(chat_id, f"could not resolve youtube feed: {e}")
+            return
     try:
         created = ensure_feed(db, url, label=label, catch_up=True)
         if not created:
             send_message(chat_id, "feed already exists")
             return
-        send_message(chat_id, "feed added")
+        if resolved_yt_url:
+            send_message(chat_id, f"YouTube feed added\n\n<code>{html_escape(resolved_yt_url)}</code>", parse_mode="HTML")
+        else:
+            send_message(chat_id, "feed added")
     except Exception as e:
         send_message(chat_id, f"cannot add feed: {e}")
 
@@ -1397,7 +1441,11 @@ def cmd_import(path):
     db = open_db()
     added = 0
     for row in sources:
-        created = ensure_feed(db, row["url"], label=row["label"], catch_up=True)
+        try:
+            created = ensure_feed(db, row["url"], label=row["label"], catch_up=True)
+        except Exception as e:
+            log("skipped (cannot fetch):", row["url"], e)
+            continue
         if created:
             added += 1
             log("added:", row["url"])
