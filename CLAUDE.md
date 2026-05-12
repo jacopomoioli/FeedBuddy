@@ -4,7 +4,7 @@ Personal RSS-to-Telegram bot. Polls feeds, sends new articles to a Telegram chat
 
 ## What it is
 
-Single-file Python script (`feedbuddy.py`, ~1000 lines). No framework. One external dependency (`feedparser`). Everything else is stdlib. SQLite for persistence. Runs as a foreground process.
+Single-file Python script (`feedbuddy.py`, ~1500 lines). No framework. One external dependency (`feedparser`). Everything else is stdlib. SQLite for persistence. Runs as a foreground process. Optional Gemini API integration for AI-powered auto-tagging.
 
 ## Architecture
 
@@ -23,10 +23,12 @@ Feed checks run every `CHECK_EVERY = 300` seconds. Because `poll_telegram` block
 
 ### SQLite schema (`feedbuddy.db`)
 
-Three tables:
+Five tables:
 
 - **`feeds`** — registered feeds: `url` (PK), `label`, `title`, `added_at`
-- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `sent_chat_id`, `sent_message_id`, `trello_saved`, `trello_card_url`, `seen_at`
+- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `trello_saved`, `trello_card_url`, `seen_at`
+- **`tags`** — user-defined tags: `id`, `tag` (unique)
+- **`item_tags`** — many-to-many join: `item_id`, `tag`
 - **`meta`** — key/value store, used for `telegram_offset` (long-poll cursor)
 
 An item is considered "sent" when `sent_message_id` is not null. New items are detected by checking `items` before sending — if the `(feed_url, item_key)` pair is absent, it's new.
@@ -45,6 +47,8 @@ An item is considered "sent" when `sent_message_id` is not null. New items are d
 
 **Minimal dependencies.** Only `feedparser` is used externally. HTTP calls use `urllib`. HTML generation uses f-strings and `html.escape`. No template engine.
 
+**AI auto-tagging via Gemini.** When `GEMINI_API_KEY` is set and at least one tag exists in the DB, each new item is tagged automatically by asking Gemini to pick from the available tag list. Tags are stored in `item_tags` and shown in the Telegram message and web UI.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in the values. The `.env` loader is hand-rolled (`load_dotenv()`), supports `export KEY=VALUE` syntax and quoted values.
@@ -58,6 +62,9 @@ Copy `.env.example` to `.env` and fill in the values. The `.env` loader is hand-
 | `TRELLO_LIST_ID` | no | — | Target list ID for saved cards |
 | `WEB_HOST` | no | `127.0.0.1` | Web UI bind address |
 | `WEB_PORT` | no | `8080` | Web UI bind port |
+| `STALE_DAYS` | no | `60` | Days after which unsent items are pruned |
+| `GEMINI_API_KEY` | no | — | Gemini API key for AI auto-tagging |
+| `GEMINI_MODEL` | no | `gemini-2.5-flash` | Gemini model to use for tagging |
 
 Trello is optional. If all three Trello vars are set, each Telegram message gets a "Save to Trello" inline button. Run `trello_list_boards.py` to find the right `TRELLO_LIST_ID`.
 
@@ -95,6 +102,10 @@ The import command prints each URL as added or skipped, then exits. It does not 
 | `/delfeed <url>` | Remove a feed |
 | `/exportfeeds` | Send the current feed list as a `feeds.txt` attachment (sources.txt format) |
 | `/summary` | List all articles seen today |
+| `/listsaved` | List items saved to Trello |
+| `/addtag <tag>` | Add a tag to the available tag list |
+| `/deltag <tag>` | Remove a tag from the available tag list |
+| `/listtags` | Show all defined tags |
 | `/testfeed <url>` | Fetch and preview the latest entry of a feed (does not mark as sent) |
 | `/testall` | Preview the latest entry of every registered feed |
 | `/testsend` | Send a fake test article (marks it as sent in the DB) |
@@ -118,13 +129,16 @@ All code is in `feedbuddy.py`. Functions are grouped loosely:
 
 - **Setup**: `load_dotenv`, `env`, `open_db`, `get_meta`, `set_meta`
 - **HTTP helpers**: `http_get`, `http_post_json`, `http_post_form`, `http_post_multipart`
-- **Telegram**: `tg_api`, `send_message`, `answer_callback_query`
+- **Gemini / AI tagging**: `ask_gemini`, `auto_tag_item`, `save_item_tags`
+- **Telegram**: `tg_api`, `send_message`, `answer_callback_query`, `edit_reply_markup`
 - **Feed file**: `parse_source_line`, `read_sources_file`
-- **Feed logic**: `fetch_feed`, `normalize_entry`, `item_key`, `ensure_feed`, `delete_feed`, `list_feeds`, `unsent_new_items`, `send_feed_item`, `poll_feeds`
-- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_summary`, `handle_testfeed`, `handle_testall`, `handle_testsend`, `handle_callback_query`, `handle_message`
+- **YouTube**: `is_youtube_channel_url`, `resolve_youtube_feed`
+- **Feed logic**: `feed_title`, `fetch_feed`, `normalize_entry`, `item_key`, `feed_display_name`, `ensure_feed`, `delete_feed`, `list_feeds`, `unsent_new_items`, `format_item`, `send_feed_item`, `poll_feeds`
+- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_addtag`, `handle_deltag`, `handle_listsaved`, `handle_listtags`, `handle_testsend`, `send_preview_item`, `handle_testfeed`, `handle_testall`, `handle_summary`, `handle_callback_query`, `handle_message`
 - **Trello**: `trello_enabled`, `trello_create_card`, `save_item_to_trello`
 - **Web UI**: `render_index`, `last_items`, `feed_status_rows`, `safe_href`, `WebHandler`, `start_web`
 - **Polling**: `poll_feeds`, `poll_telegram`
+- **Migrations**: `backfill_published_ts`
 - **Entry points**: `main`, `cmd_import`
 
 ## Style notes

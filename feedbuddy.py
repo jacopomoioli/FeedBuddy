@@ -259,8 +259,15 @@ def ask_gemini(model, prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0},
     }
-    resp = http_post_json(url, payload, timeout=30)
-    return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+    for attempt in range(3):
+        try:
+            resp = http_post_json(url, payload, timeout=30)
+            return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            if e.code == 503 and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise
 
 
 def auto_tag_item(db, feed_url, entry):
