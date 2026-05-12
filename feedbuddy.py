@@ -18,6 +18,9 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import feedparser
+import requests
+from readability import Document
+from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
 
 DB_PATH = "feedbuddy.db"
@@ -205,7 +208,7 @@ def http_post_json(url, data, timeout=30):
         return json.loads(r.read().decode())
 
 
-def http_post_multipart(url, fields, filename, file_content, timeout=30):
+def http_post_multipart(url, fields, filename, file_content, content_type="text/plain", timeout=30):
     boundary = b"----feedbuddy"
     parts = []
     for name, value in fields.items():
@@ -217,7 +220,7 @@ def http_post_multipart(url, fields, filename, file_content, timeout=30):
     parts.append(
         b"--" + boundary + b"\r\n"
         + f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode()
-        + b"Content-Type: text/plain\r\n\r\n"
+        + f"Content-Type: {content_type}\r\n\r\n".encode()
         + file_content + b"\r\n"
     )
     parts.append(b"--" + boundary + b"--\r\n")
@@ -472,6 +475,59 @@ def format_item(feed_name, entry):
     return "\n\n".join(parts)
 
 
+_PDF_CSS = WeasyprintCSS(string="""
+    @page { margin: 2.5cm 3cm; size: A4; }
+    body { font-family: Georgia, serif; font-size: 11pt; line-height: 1.7; color: #1a1a1a; }
+    h1 { font-size: 22pt; line-height: 1.3; margin: 0 0 0.3em 0; }
+    h2 { font-size: 15pt; margin: 1.4em 0 0.4em; }
+    h3 { font-size: 13pt; margin: 1.2em 0 0.3em; }
+    h4, h5, h6 { font-size: 11pt; margin: 1em 0 0.3em; }
+    p { margin: 0 0 0.9em 0; orphans: 3; widows: 3; }
+    a { color: #1a1a1a; text-decoration: none; }
+    blockquote { border-left: 3px solid #ccc; margin: 1em 0; padding: 0.3em 1em; color: #555; font-style: italic; }
+    pre, code { font-family: monospace; font-size: 9pt; background: #f5f5f5; }
+    pre { padding: 0.8em 1em; white-space: pre-wrap; word-break: break-all; }
+    code { padding: 0.1em 0.3em; }
+    img { max-width: 100%; height: auto; }
+    ul, ol { margin: 0 0 0.9em 0; padding-left: 1.5em; }
+    li { margin-bottom: 0.3em; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 10pt; }
+    th, td { border: 1px solid #ddd; padding: 0.4em 0.6em; }
+    th { background: #f0f0f0; font-weight: bold; }
+    .source { font-size: 9pt; color: #888; margin: 0 0 1.8em 0; font-family: monospace; word-break: break-all; }
+""")
+
+
+def _is_youtube_feed(feed_url):
+    return feed_url and feed_url.startswith(_YT_FEED_BASE)
+
+
+def article_to_pdf_bytes(url, title):
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FeedBuddy/1.0)"}, timeout=20)
+    r.raise_for_status()
+    doc = Document(r.text)
+    body_html = doc.summary(html_partial=True)
+    full_html = (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
+        f'<h1>{html_escape(title)}</h1>'
+        f'<p class="source">{html_escape(url)}</p>'
+        f'{body_html}</body></html>'
+    )
+    return WeasyprintHTML(string=full_html, base_url=url).write_pdf(stylesheets=[_PDF_CSS])
+
+
+def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
+    fields = {"chat_id": str(chat_id)}
+    if caption:
+        fields["caption"] = caption[:1024]
+    if parse_mode:
+        fields["parse_mode"] = parse_mode
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup)
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    return http_post_multipart(tg_url, fields, filename, pdf_bytes, content_type="application/pdf")
+
+
 def send_feed_item(db, feed_url, feed_name, entry):
     db.execute(
         """
@@ -507,7 +563,18 @@ def send_feed_item(db, feed_url, feed_name, entry):
                 [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
             ]
         }
-    msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
+    msg = None
+    if not _is_youtube_feed(feed_url) and entry.get("link"):
+        try:
+            pdf_bytes = article_to_pdf_bytes(entry["link"], entry["title"])
+            safe_title = re.sub(r"[^\w\s-]", "", entry["title"])[:60].strip()
+            filename = re.sub(r"\s+", "-", safe_title).lower() + ".pdf"
+            result = send_document(TARGET_CHAT_ID, pdf_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
+            msg = result["result"]
+        except Exception as e:
+            log("pdf failed, sending text only:", entry["title"], e)
+    if msg is None:
+        msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
     db.execute(
         """
         update items

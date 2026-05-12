@@ -5,3 +5,5 @@ sources.txt
 __pycache__
 .claude
 upload.sh
+*.pdf
+delete_last_items.py
