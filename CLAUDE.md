@@ -45,11 +45,13 @@ An item is considered "sent" when `sent_message_id` is not null. New items are d
 
 **Catch-up on first import.** When a feed is added (via `/addfeed` or CLI import), existing entries are marked as seen immediately so the user is not flooded with historical articles.
 
-**Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, and `weasyprint` are external. HTTP calls to Telegram/Gemini use `urllib`. HTML generation uses f-strings and `html.escape`. No template engine.
+**Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, `weasyprint`, and `yt-dlp` are external. HTTP calls to Telegram/Gemini use `urllib`. HTML generation uses f-strings and `html.escape`. No template engine.
 
 **AI auto-tagging via Gemini.** When `GEMINI_API_KEY` is set and at least one tag exists in the DB, each new item is tagged automatically by asking Gemini to pick from the available tag list. Tags are stored in `item_tags` and shown in the Telegram message and web UI.
 
 **Article PDF attachment.** For non-YouTube feeds, each new item is fetched, extracted with `readability-lxml` (Firefox reader-mode algorithm), rendered to PDF via `weasyprint`, and sent as a `sendDocument` Telegram message with the formatted text as caption and the inline keyboard attached. If PDF generation fails for any reason the bot falls back to a plain text message.
+
+**YouTube audio attachment.** For YouTube feeds, `yt-dlp` downloads the audio stream (preferring M4A ≤96 kbps for size, ~0.7 MB/min) and sends it via `sendAudio`, which renders as a native audio player in Telegram. Falls back to text-only if the download fails or the file exceeds Telegram's 50 MB bot limit (~75 min of audio).
 
 ## Configuration
 
@@ -130,6 +132,7 @@ All code is in `feedbuddy.py`. Functions are grouped loosely:
 - **HTTP helpers**: `http_get`, `http_post_json`, `http_post_form`, `http_post_multipart`
 - **Gemini / AI tagging**: `ask_gemini`, `auto_tag_item`, `save_item_tags`
 - **PDF**: `_PDF_CSS`, `_is_youtube_feed`, `article_to_pdf_bytes`, `send_document`
+- **YouTube audio**: `download_youtube_audio`, `send_audio`
 - **Telegram**: `tg_api`, `send_message`, `answer_callback_query`, `edit_reply_markup`
 - **Feed file**: `parse_source_line`, `read_sources_file`
 - **YouTube**: `is_youtube_channel_url`, `resolve_youtube_feed`

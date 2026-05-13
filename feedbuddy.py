@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -19,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import feedparser
 import requests
+import yt_dlp
 from readability import Document
 from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
@@ -201,7 +203,7 @@ def http_post_json(url, data, timeout=30):
         return json.loads(r.read().decode())
 
 
-def http_post_multipart(url, fields, filename, file_content, content_type="text/plain", timeout=30):
+def http_post_multipart(url, fields, filename, file_content, content_type="text/plain", field_name="document", timeout=30):
     boundary = b"----feedbuddy"
     parts = []
     for name, value in fields.items():
@@ -212,7 +214,7 @@ def http_post_multipart(url, fields, filename, file_content, content_type="text/
         )
     parts.append(
         b"--" + boundary + b"\r\n"
-        + f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode()
+        + f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode()
         + f"Content-Type: {content_type}\r\n\r\n".encode()
         + file_content + b"\r\n"
     )
@@ -525,6 +527,33 @@ def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, r
     return http_post_multipart(tg_url, fields, filename, pdf_bytes, content_type="application/pdf")
 
 
+def download_youtube_audio(url):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        opts = {
+            "format": "bestaudio[ext=m4a][abr<=96]/bestaudio[abr<=96]/bestaudio[ext=m4a]/bestaudio",
+            "outtmpl": os.path.join(tmpdir, "%(title)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            path = ydl.prepare_filename(info)
+            with open(path, "rb") as f:
+                return f.read(), os.path.basename(path)
+
+
+def send_audio(chat_id, audio_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
+    fields = {"chat_id": str(chat_id)}
+    if caption:
+        fields["caption"] = caption[:1024]
+    if parse_mode:
+        fields["parse_mode"] = parse_mode
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup)
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
+    return http_post_multipart(tg_url, fields, filename, audio_bytes, content_type="audio/mp4", field_name="audio")
+
+
 def send_feed_item(db, feed_url, feed_name, entry):
     db.execute(
         """
@@ -559,15 +588,23 @@ def send_feed_item(db, feed_url, feed_name, entry):
         ]
     }
     msg = None
-    if not _is_youtube_feed(feed_url) and entry.get("link"):
-        try:
-            pdf_bytes = article_to_pdf_bytes(entry["link"], entry["title"])
-            safe_title = re.sub(r"[^\w\s-]", "", entry["title"])[:60].strip()
-            filename = re.sub(r"\s+", "-", safe_title).lower() + ".pdf"
-            result = send_document(TARGET_CHAT_ID, pdf_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
-            msg = result["result"]
-        except Exception as e:
-            log("pdf failed, sending text only:", entry["title"], e)
+    if entry.get("link"):
+        if _is_youtube_feed(feed_url):
+            try:
+                audio_bytes, filename = download_youtube_audio(entry["link"])
+                result = send_audio(TARGET_CHAT_ID, audio_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
+                msg = result["result"]
+            except Exception as e:
+                log("audio download failed, sending text only:", entry["title"], e)
+        else:
+            try:
+                pdf_bytes = article_to_pdf_bytes(entry["link"], entry["title"])
+                safe_title = re.sub(r"[^\w\s-]", "", entry["title"])[:60].strip()
+                filename = re.sub(r"\s+", "-", safe_title).lower() + ".pdf"
+                result = send_document(TARGET_CHAT_ID, pdf_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
+                msg = result["result"]
+            except Exception as e:
+                log("pdf failed, sending text only:", entry["title"], e)
     if msg is None:
         msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
     db.execute(

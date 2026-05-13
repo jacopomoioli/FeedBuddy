@@ -3,7 +3,7 @@
 Telegram-based RSS reader that just makes sense.
 
 - polls RSS feeds
-- sends new posts to Telegram, with the full article as a readable PDF attachment
+- sends new posts to Telegram, with the full article as a readable PDF attachment (or audio for YouTube feeds)
 - tag posts with LLM-based auto-tagging
 - save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds & tags from Telegram
