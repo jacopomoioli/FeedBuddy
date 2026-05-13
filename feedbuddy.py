@@ -85,9 +85,6 @@ load_dotenv()
 
 BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
 TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
-TRELLO_KEY = env("TRELLO_KEY")
-TRELLO_TOKEN = env("TRELLO_TOKEN")
-TRELLO_LIST_ID = env("TRELLO_LIST_ID")
 WEB_HOST = env("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(env("WEB_PORT", "8080"))
 STALE_DAYS = int(env("STALE_DAYS", "60"))
@@ -95,10 +92,6 @@ GEMINI_API_KEY = env("GEMINI_API_KEY")
 GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash")
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-
-def trello_enabled():
-    return bool(TRELLO_KEY and TRELLO_TOKEN and TRELLO_LIST_ID)
 
 
 def open_db():
@@ -560,13 +553,11 @@ def send_feed_item(db, feed_url, feed_name, entry):
     text = format_item(feed_name, entry)
     if tags:
         text += "\n\n" + " ".join(tags)
-    markup = None
-    if trello_enabled():
-        markup = {
-            "inline_keyboard": [
-                [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
-            ]
-        }
+    markup = {
+        "inline_keyboard": [
+            [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
+        ]
+    }
     msg = None
     if not _is_youtube_feed(feed_url) and entry.get("link"):
         try:
@@ -982,43 +973,6 @@ def handle_summary(db, chat_id):
     send_message(chat_id, text)
 
 
-def trello_create_card(name, url, feed_url):
-    if not trello_enabled():
-        raise RuntimeError("trello is not configured")
-    desc = url
-    if feed_url:
-        desc += f"\n\nfeed: {feed_url}"
-    reply = http_post_form(
-        "https://api.trello.com/1/cards",
-        {
-            "key": TRELLO_KEY,
-            "token": TRELLO_TOKEN,
-            "idList": TRELLO_LIST_ID,
-            "name": name[:200],
-            "desc": desc[:16000],
-        },
-    )
-    return reply["url"]
-
-
-def save_item_to_trello(db, item_id):
-    row = db.execute(
-        "select * from items where id = ?",
-        (item_id,),
-    ).fetchone()
-    if not row:
-        return "item not found"
-    if row["trello_saved"]:
-        return row["trello_card_url"] or "already saved"
-    card_url = trello_create_card(row["title"] or "(no title)", row["url"] or "", row["feed_url"])
-    db.execute(
-        "update items set trello_saved = 1, trello_card_url = ? where id = ?",
-        (card_url, item_id),
-    )
-    db.commit()
-    return card_url
-
-
 def find_item_by_message(db, chat_id, message_id):
     return db.execute(
         "select id from items where sent_chat_id = ? and sent_message_id = ?",
@@ -1059,7 +1013,7 @@ def render_index():
     db = open_db()
     items = db.execute(
         """
-        select i.title, i.url, i.published, i.seen_at, i.feed_url, i.trello_saved, i.trello_card_url,
+        select i.title, i.url, i.published, i.seen_at, i.feed_url, i.trello_saved,
                i.summary, group_concat(it.tag, ' ') as tags
         from items i
         left join item_tags it on it.item_id = i.id
@@ -1444,7 +1398,8 @@ def handle_callback_query(db, update):
             answer_callback_query(cb["id"], "item not found")
             return
         try:
-            save_item_to_trello(db, row["id"])
+            db.execute("update items set trello_saved = 1 where id = ?", (row["id"],))
+            db.commit()
             pin_message(chat_id, message_id)
             answer_callback_query(cb["id"], "saved")
             edit_reply_markup(chat_id, message_id, {

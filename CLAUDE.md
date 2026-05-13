@@ -59,16 +59,13 @@ Copy `.env.example` to `.env` and fill in the values. The `.env` loader is hand-
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | — | Bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | yes | — | Only chat allowed to talk to the bot, and destination for notifications |
-| `TRELLO_KEY` | no | — | Trello Power-Up key |
-| `TRELLO_TOKEN` | no | — | Trello Power-Up token |
-| `TRELLO_LIST_ID` | no | — | Target list ID for saved cards |
 | `WEB_HOST` | no | `127.0.0.1` | Web UI bind address |
 | `WEB_PORT` | no | `8080` | Web UI bind port |
 | `STALE_DAYS` | no | `60` | Days after which unsent items are pruned |
 | `GEMINI_API_KEY` | no | — | Gemini API key for AI auto-tagging |
 | `GEMINI_MODEL` | no | `gemini-2.5-flash` | Gemini model to use for tagging |
 
-Trello is optional. If all three Trello vars are set, each Telegram message gets a "Save to Trello" inline button. Run `trello_list_boards.py` to find the right `TRELLO_LIST_ID`.
+Each Telegram message gets a "Save for later" inline button. Pressing it pins the message in the chat and marks it in the DB. Pressing "Remove from later" unpins it.
 
 ## Running
 
@@ -138,7 +135,6 @@ All code is in `feedbuddy.py`. Functions are grouped loosely:
 - **YouTube**: `is_youtube_channel_url`, `resolve_youtube_feed`
 - **Feed logic**: `feed_title`, `fetch_feed`, `normalize_entry`, `item_key`, `feed_display_name`, `ensure_feed`, `delete_feed`, `list_feeds`, `unsent_new_items`, `format_item`, `send_feed_item`, `poll_feeds`
 - **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_addtag`, `handle_deltag`, `handle_listsaved`, `handle_listtags`, `handle_testsend`, `send_preview_item`, `handle_testfeed`, `handle_testall`, `handle_summary`, `handle_callback_query`, `handle_message`
-- **Trello**: `trello_enabled`, `trello_create_card`, `save_item_to_trello`
 - **Web UI**: `render_index`, `last_items`, `feed_status_rows`, `safe_href`, `WebHandler`, `start_web`
 - **Polling**: `poll_feeds`, `poll_telegram`
 - **Migrations**: `backfill_published_ts`

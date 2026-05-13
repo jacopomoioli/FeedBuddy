@@ -5,7 +5,7 @@ Telegram-based RSS reader that just makes sense.
 - polls RSS feeds
 - sends new posts to Telegram, with the full article as a readable PDF attachment
 - tag posts with LLM-based auto-tagging
-- save posts for later (and on a trello board) with a button in Telegram
+- save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds & tags from Telegram
 - minimal web page to list latest posts, "saved for later" posts & sources status
 
@@ -26,9 +26,6 @@ Edit it and set the right values. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` ar
 | `WEB_HOST` | no | `127.0.0.1` | Bind address for the web UI |
 | `WEB_PORT` | no | `8080` | Bind port for the web UI |
 | `STALE_DAYS` | no | `60` | Days before a feed is marked as stale in the web UI |
-| `TRELLO_KEY` | no | | Trello API key |
-| `TRELLO_TOKEN` | no | | Trello API token |
-| `TRELLO_LIST_ID` | no | | Trello target list for saved cards. Run `trello_list_boards.py` to find it |
 | `GEMINI_API_KEY` | no | | Enables LLM-based auto-tagging |
 | `GEMINI_MODEL` | no | `gemini-2.5-flash` | Model used for tagging |
 
@@ -59,7 +56,7 @@ python3 feedbuddy.py
 | `/testall` | Fetch and preview the latest post of every feed |
 | `/testsend` | Send a test post |
 
-Each post sent by the bot has a "Save for later" button. Pressing it again removes it from the saved list.
+Each post sent by the bot has a "Save for later" button. Pressing it pins the message in the chat. Pressing "Remove from later" unpins it.
 
 ## CLI
 
