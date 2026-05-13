@@ -1404,6 +1404,20 @@ def start_web():
     return server
 
 
+def pin_message(chat_id, message_id):
+    try:
+        tg_api("pinChatMessage", {"chat_id": chat_id, "message_id": message_id, "disable_notification": True})
+    except Exception as e:
+        log("pinChatMessage failed:", e)
+
+
+def unpin_message(chat_id, message_id):
+    try:
+        tg_api("unpinChatMessage", {"chat_id": chat_id, "message_id": message_id})
+    except Exception as e:
+        log("unpinChatMessage failed:", e)
+
+
 def edit_reply_markup(chat_id, message_id, markup):
     try:
         tg_api("editMessageReplyMarkup", {
@@ -1431,6 +1445,7 @@ def handle_callback_query(db, update):
             return
         try:
             save_item_to_trello(db, row["id"])
+            pin_message(chat_id, message_id)
             answer_callback_query(cb["id"], "saved")
             edit_reply_markup(chat_id, message_id, {
                 "inline_keyboard": [[{"text": "Remove from later", "callback_data": f"unsave:{row['id']}"}]]
@@ -1447,6 +1462,7 @@ def handle_callback_query(db, update):
             return
         db.execute("update items set trello_saved = 0, trello_card_url = null where id = ?", (row["id"],))
         db.commit()
+        unpin_message(chat_id, message_id)
         answer_callback_query(cb["id"], "removed")
         edit_reply_markup(chat_id, message_id, {
             "inline_keyboard": [[{"text": "Save for later", "callback_data": f"save:{row['id']}"}]]
