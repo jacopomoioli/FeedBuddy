@@ -505,7 +505,11 @@ def _is_youtube_feed(feed_url):
 def article_to_pdf_bytes(url, title):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FeedBuddy/1.0)"}, timeout=20)
     r.raise_for_status()
-    doc = Document(r.text)
+    try:
+        html = r.content.decode("utf-8")
+    except UnicodeDecodeError:
+        html = r.content.decode("latin-1")
+    doc = Document(html)
     body_html = doc.summary(html_partial=True)
     full_html = (
         f'<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
