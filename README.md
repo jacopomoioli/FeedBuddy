@@ -7,7 +7,6 @@ Telegram-based RSS reader that just makes sense.
 - tag posts with LLM-based auto-tagging
 - save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds & tags from Telegram
-- minimal web page to list latest posts, "saved for later" posts & sources status
 
 ## Getting Started
 
@@ -23,9 +22,6 @@ Edit it and set the right values. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` ar
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | | Bot token from `@BotFather` |
 | `TELEGRAM_CHAT_ID` | yes | | Only chat allowed to talk to the bot, and destination for notifications. Get it from `@GetMyIDo_Bot` |
-| `WEB_HOST` | no | `127.0.0.1` | Bind address for the web UI |
-| `WEB_PORT` | no | `8080` | Bind port for the web UI |
-| `STALE_DAYS` | no | `60` | Days before a feed is marked as stale in the web UI |
 | `GEMINI_API_KEY` | no | | Enables LLM-based auto-tagging |
 | `GEMINI_MODEL` | no | `gemini-2.5-flash` | Model used for tagging |
 
@@ -74,17 +70,6 @@ https://example.com/no-label.rss
 
 Lines starting with `#` are ignored.
 
-## Web Interface
-
-The web UI runs on `http://127.0.0.1:8080` by default. 
-Shows
-- latest posts
-- saved for later posts
-- feed list & status
-
-![latest & saved posts](https://github.com/user-attachments/assets/ea66d481-cf04-4846-aaff-1508dbf00f8e)
-
-![feed list](https://github.com/user-attachments/assets/0d5307f3-196f-4eea-914f-b39da88f5c88)
 
 ## Why
 
