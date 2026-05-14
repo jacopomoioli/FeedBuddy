@@ -8,3 +8,4 @@ upload.sh
 *.pdf
 delete_last_items.py
 feedbuddy.log
+broadcast.py

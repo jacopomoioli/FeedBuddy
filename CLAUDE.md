@@ -4,7 +4,7 @@ Personal RSS-to-Telegram bot. Polls feeds and sends new articles to a Telegram c
 
 ## What it is
 
-Single-file Python script (`feedbuddy.py`, ~1100 lines). No framework. SQLite for persistence. Runs as a foreground process. Optional Gemini API integration for AI-powered auto-tagging.
+Single-file Python script (`feedbuddy.py`, ~1200 lines). No framework. SQLite for persistence. Runs as a foreground process. Optional OpenRouter integration for LLM-based article summarization.
 
 ## Architecture
 
@@ -23,11 +23,11 @@ Feed checks run every `CHECK_EVERY = 300` seconds. Because `poll_telegram` block
 
 ### SQLite schema (`feedbuddy.db`)
 
-Five tables:
+Three tables:
 
 - **`feeds`** — registered feeds: `url` (PK), `label`, `title`, `added_at`
-- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `trello_saved`, `trello_card_url`, `seen_at`
-- **`meta`** — key/value store, used for `telegram_offset` (long-poll cursor)
+- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `saved`, `seen_at`
+- **`meta`** — key/value store, used for `telegram_offset` (long-poll cursor) and `llm_instruction` (editable LLM prompt)
 
 An item is considered "sent" when `sent_message_id` is not null. New items are detected by checking `items` before sending — if the `(feed_url, item_key)` pair is absent, it's new.
 
@@ -39,7 +39,7 @@ An item is considered "sent" when `sent_message_id` is not null. New items are d
 
 **Catch-up on first import.** When a feed is added (via `/addfeed` or CLI import), existing entries are marked as seen immediately so the user is not flooded with historical articles.
 
-**Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, `weasyprint`, and `yt-dlp` are external. HTTP calls to Telegram/Gemini use `urllib`. HTML generation uses f-strings and `html.escape`. No template engine.
+**Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, `weasyprint`, and `yt-dlp` are external. HTTP calls to Telegram use `urllib`; OpenRouter calls use `requests`. HTML generation uses f-strings and `html.escape`. No template engine.
 
 **OpenRouter integration.** `ask_llm(prompt)` calls the OpenRouter API (OpenAI-compatible chat completions). `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` configure it. Default model: `google/gemini-2.5-flash`. When set, `summarize_article(title, text)` sends the first 3000 chars of extracted article text to the LLM and appends a 2-3 sentence summary to the Telegram caption.
 
@@ -95,15 +95,15 @@ The import command prints each URL as added or skipped, then exits. It does not 
 | `/delfeed <url>` | Remove a feed |
 | `/exportfeeds` | Send the current feed list as a `feeds.txt` attachment (sources.txt format) |
 | `/summary` | List all articles seen today |
-| `/listsaved` | List items saved to Trello |
-| `/addtag <tag>` | Add a tag to the available tag list |
-| `/deltag <tag>` | Remove a tag from the available tag list |
-| `/listtags` | Show all defined tags |
+| `/listsaved` | List items saved for later |
+| `/getprompt` | Show the current editable LLM instruction |
+| `/setprompt <text>` | Replace the LLM instruction (appended after the article excerpt) |
+| `/getlog` | Download the current `feedbuddy.log` file |
 | `/testfeed <url>` | Fetch and preview the latest entry of a feed (does not mark as sent) |
 | `/testall` | Preview the latest entry of every registered feed |
 | `/testsend` | Send a fake test article (marks it as sent in the DB) |
 
-Only `TARGET_CHAT_ID` can interact with the bot. All other chats are silently ignored.
+Only `TARGET_CHAT_ID` can run commands. `SUBSCRIBER_CHAT_IDS` receive posts but cannot interact with the bot.
 
 ## Feed format (`sources.txt`)
 
@@ -138,6 +138,6 @@ All code is in `feedbuddy.py`. Functions are grouped loosely:
 
 - Minimal. No abstractions beyond what is needed.
 - No comments unless the reason is non-obvious.
-- Functions do one thing. No classes except `WebHandler` (required by stdlib).
+- Functions do one thing. No classes.
 - Error handling at the boundary (network calls, Telegram API). Internal logic is allowed to raise.
 - All timestamps stored as UTC ISO strings. Parsed back with `parse_date()` which handles both ISO and RFC 2822 (email) format.

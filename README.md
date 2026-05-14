@@ -4,8 +4,9 @@ Telegram-based RSS reader that just makes sense.
 
 - polls RSS feeds
 - sends new posts to Telegram, with the full article as a readable PDF attachment (or audio for YouTube feeds)
+- summarizes each article with an LLM
 - save posts for later with a button in Telegram (pins the message in the chat)
-- manage feeds & tags from Telegram
+- manage feeds from Telegram
 
 ## Getting Started
 
@@ -45,6 +46,9 @@ python3 feedbuddy.py
 | `/exportfeeds` | Download the current feed list as `feeds.txt` |
 | `/listsaved` | List all posts saved for later |
 | `/summary` | List every post seen today |
+| `/getprompt` | Show the current LLM summarization instruction |
+| `/setprompt <text>` | Edit the LLM summarization instruction |
+| `/getlog` | Download the bot log file |
 | `/testfeed <url>` | Fetch and preview the latest post of a feed |
 | `/testall` | Fetch and preview the latest post of every feed |
 | `/testsend` | Send a test post |
