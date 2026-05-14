@@ -8,6 +8,17 @@ Telegram-based RSS reader that just makes sense.
 - save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds from Telegram
 
+## Demo
+
+| Incoming Post | Post Saved for Later |
+|-|-|
+|![Incoming Post](https://github.com/user-attachments/assets/3374545c-5b34-46bd-a34c-d3205dedc7b9) | ![Post Saved for Later](https://github.com/user-attachments/assets/57d9650c-32e3-447b-8576-8834af22c7ef) | 
+
+| Loaded Feed Listing | Help Command |
+|-|-|
+|![Loaded Feed Listing](https://github.com/user-attachments/assets/210b5a2f-1f09-4ce4-9b94-b391350ea148) | ![Help Command](https://github.com/user-attachments/assets/16815034-02e6-47e9-9fe4-b0b792c10176) |
+
+
 ## Getting Started
 
 Copy `.env.example`:
