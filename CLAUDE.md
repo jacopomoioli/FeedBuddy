@@ -27,8 +27,6 @@ Five tables:
 
 - **`feeds`** — registered feeds: `url` (PK), `label`, `title`, `added_at`
 - **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `trello_saved`, `trello_card_url`, `seen_at`
-- **`tags`** — user-defined tags: `id`, `tag` (unique)
-- **`item_tags`** — many-to-many join: `item_id`, `tag`
 - **`meta`** — key/value store, used for `telegram_offset` (long-poll cursor)
 
 An item is considered "sent" when `sent_message_id` is not null. New items are detected by checking `items` before sending — if the `(feed_url, item_key)` pair is absent, it's new.
@@ -43,7 +41,7 @@ An item is considered "sent" when `sent_message_id` is not null. New items are d
 
 **Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, `weasyprint`, and `yt-dlp` are external. HTTP calls to Telegram/Gemini use `urllib`. HTML generation uses f-strings and `html.escape`. No template engine.
 
-**AI auto-tagging via Gemini.** When `GEMINI_API_KEY` is set and at least one tag exists in the DB, each new item is tagged automatically by asking Gemini to pick from the available tag list. Tags are stored in `item_tags` and shown in the Telegram message and web UI.
+**OpenRouter integration.** `ask_llm(prompt)` calls the OpenRouter API (OpenAI-compatible chat completions). `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` configure it. Default model: `google/gemini-2.5-flash`. When set, `summarize_article(title, text)` sends the first 3000 chars of extracted article text to the LLM and appends a 2-3 sentence summary to the Telegram caption.
 
 **Article PDF attachment.** For non-YouTube feeds, each new item is fetched, extracted with `readability-lxml` (Firefox reader-mode algorithm), rendered to PDF via `weasyprint`, and sent as a `sendDocument` Telegram message with the formatted text as caption and the inline keyboard attached. If PDF generation fails for any reason the bot falls back to a plain text message.
 
@@ -57,8 +55,9 @@ Copy `.env.example` to `.env` and fill in the values. The `.env` loader is hand-
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | — | Bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | yes | — | Only chat allowed to talk to the bot, and destination for notifications |
-| `GEMINI_API_KEY` | no | — | Gemini API key for AI auto-tagging |
-| `GEMINI_MODEL` | no | `gemini-2.5-flash` | Gemini model to use for tagging |
+| `SUBSCRIBER_CHAT_IDS` | no | — | Comma-separated chat IDs that receive posts but cannot run commands |
+| `OPENROUTER_API_KEY` | no | — | OpenRouter API key |
+| `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model to use via OpenRouter |
 
 Each Telegram message gets a "Save for later" inline button. Pressing it pins the message in the chat and marks it in the DB. Pressing "Remove from later" unpins it.
 
@@ -123,14 +122,14 @@ All code is in `feedbuddy.py`. Functions are grouped loosely:
 
 - **Setup**: `load_dotenv`, `env`, `open_db`, `get_meta`, `set_meta`
 - **HTTP helpers**: `http_get`, `http_post_json`, `http_post_form`, `http_post_multipart`
-- **Gemini / AI tagging**: `ask_gemini`, `auto_tag_item`, `save_item_tags`
+- **OpenRouter**: `ask_llm`, `summarize_article`
 - **PDF**: `_PDF_CSS`, `_is_youtube_feed`, `article_to_pdf_bytes`, `send_document`
 - **YouTube audio**: `download_youtube_audio`, `send_audio`
 - **Telegram**: `tg_api`, `send_message`, `answer_callback_query`, `edit_reply_markup`
 - **Feed file**: `parse_source_line`, `read_sources_file`
 - **YouTube**: `is_youtube_channel_url`, `resolve_youtube_feed`
 - **Feed logic**: `feed_title`, `fetch_feed`, `normalize_entry`, `item_key`, `feed_display_name`, `ensure_feed`, `delete_feed`, `list_feeds`, `unsent_new_items`, `format_item`, `send_feed_item`, `poll_feeds`
-- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_addtag`, `handle_deltag`, `handle_listsaved`, `handle_listtags`, `handle_testsend`, `send_preview_item`, `handle_testfeed`, `handle_testall`, `handle_summary`, `handle_callback_query`, `handle_message`
+- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_listsaved`, `handle_testsend`, `send_preview_item`, `handle_testfeed`, `handle_testall`, `handle_summary`, `handle_callback_query`, `handle_message`
 - **Polling**: `poll_feeds`, `poll_telegram`
 - **Migrations**: `backfill_published_ts`
 - **Entry points**: `main`, `cmd_import`

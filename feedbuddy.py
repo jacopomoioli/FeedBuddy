@@ -89,10 +89,10 @@ load_dotenv()
 
 BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
 TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
-GEMINI_API_KEY = env("GEMINI_API_KEY")
-GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash")
-
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+_raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
+SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
 
 def open_db():
@@ -118,6 +118,10 @@ def open_db():
         db.execute("alter table items add column published_ts text")
     if item_cols and "summary" not in item_cols:
         db.execute("alter table items add column summary text")
+    if item_cols and "saved" not in item_cols:
+        db.execute("alter table items add column saved integer not null default 0")
+        if "trello_saved" in item_cols:
+            db.execute("update items set saved = trello_saved")
     db.execute(
         """
         create table if not exists items (
@@ -127,11 +131,11 @@ def open_db():
             title text,
             url text,
             published text,
+            published_ts text,
             summary text,
             sent_chat_id text,
             sent_message_id integer,
-            trello_saved integer not null default 0,
-            trello_card_url text,
+            saved integer not null default 0,
             seen_at text not null,
             unique(feed_url, item_key)
         )
@@ -248,61 +252,24 @@ def http_post_form(url, data, timeout=30):
         return json.loads(body.decode())
 
 
-def ask_gemini(model, prompt):
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set")
-    url = GEMINI_URL.format(model=model) + "?key=" + GEMINI_API_KEY
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0},
-    }
+def ask_llm(prompt):
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
     for attempt in range(3):
         try:
-            resp = http_post_json(url, payload, timeout=30)
-            return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except urllib.error.HTTPError as e:
-            if e.code == 503 and attempt < 2:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+                json={"model": OPENROUTER_MODEL, "messages": [{"role": "user", "content": prompt}]},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except requests.HTTPError as e:
+            if e.response.status_code in (502, 503) and attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
-            raise
-
-
-def auto_tag_item(db, feed_url, entry):
-    available_tags = [row["tag"] for row in db.execute("select tag from tags order by tag").fetchall()]
-    if not available_tags:
-        return []
-    feed = db.execute("select label, url from feeds where url = ?", (feed_url,)).fetchone()
-    feed_name = feed_display_name(feed["label"], feed["url"]) if feed else (feed_url or "")
-    post_info = "\n".join([
-        f"title: {entry.get('title') or ''}",
-        f"url: {entry.get('link') or entry.get('url') or ''}",
-        f"source: {feed_name}",
-        f"summary: {entry.get('summary') or ''}",
-    ])
-    prompt = (
-        f"Post:\n{post_info}\n\n"
-        f"Available tags: {' '.join(available_tags)}\n\n"
-        "Based on the information provided about the post, and the list of available tags, "
-        "return a space separated string containing only the appropriate tags. "
-        "Use only tags from the list above. Return only the tags, nothing else. "
-        "If no tag fits, return an empty string."
-    )
-    raw = ask_gemini(GEMINI_MODEL, prompt)
-    matched = []
-    for word in raw.lower().split():
-        word = word.strip().strip("#")
-        if word in available_tags and f"#{word}" not in matched:
-            matched.append(f"#{word}")
-    return matched
-
-
-def save_item_tags(db, item_id, tags):
-    for tag in tags:
-        db.execute(
-            "insert or ignore into item_tags(item_id, tag) values(?, ?)",
-            (item_id, tag.lstrip("#")),
-        )
-    db.commit()
+            raise RuntimeError(f"OpenRouter {e.response.status_code}: {e.response.text}")
 
 
 def tg_api(method, data):
@@ -414,6 +381,7 @@ def ensure_feed(db, url, label=None, catch_up=False):
             db.execute("update feeds set label = ? where url = ?", (label, url))
             db.commit()
         return False
+    log("adding feed:", url)
     title, entries = fetch_feed(url)
     db.execute(
         "insert into feeds(url, label, title, added_at) values(?, ?, ?, ?)",
@@ -428,6 +396,7 @@ def ensure_feed(db, url, label=None, catch_up=False):
                 """,
                 (url, entry["key"], entry["title"], entry["link"], entry["published"], entry.get("published_ts"), entry.get("summary"), now()),
             )
+        log(f"caught up {len(entries)} existing items for:", url)
     db.commit()
     return True
 
@@ -435,6 +404,7 @@ def ensure_feed(db, url, label=None, catch_up=False):
 def delete_feed(db, url):
     db.execute("delete from feeds where url = ?", (url,))
     db.commit()
+    log("removed feed:", url)
 
 
 def list_feeds(db):
@@ -457,12 +427,11 @@ def unsent_new_items(db, feed_url, entries):
     return out
 
 
-def format_item(feed_name, entry):
+def format_item(feed_name, entry, summary=None):
     parts = []
     if feed_name:
         parts.append(f"<i>{html_escape(feed_name)}</i>")
     parts.append(f"<b>{html_escape(entry['title'])}</b>")
-    summary = entry.get("summary") or ""
     if summary:
         parts.append(html_escape(summary))
     parts.append(entry["link"])
@@ -505,13 +474,26 @@ def article_to_pdf_bytes(url, title):
         html = r.content.decode("latin-1")
     doc = Document(html)
     body_html = doc.summary(html_partial=True)
+    plain_text = strip_html(body_html)
     full_html = (
         f'<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
         f'<h1>{html_escape(title)}</h1>'
         f'<p class="source">{html_escape(url)}</p>'
         f'{body_html}</body></html>'
     )
-    return WeasyprintHTML(string=full_html, base_url=url).write_pdf(stylesheets=[_PDF_CSS])
+    pdf_bytes = WeasyprintHTML(string=full_html, base_url=url).write_pdf(stylesheets=[_PDF_CSS])
+    return pdf_bytes, plain_text
+
+
+PROMPT_PREFIX = "Article: {title}\n\n{excerpt}\n\n"
+DEFAULT_INSTRUCTION = "Write a 2-3 sentence summary of the key points. Be concise and direct. No preamble."
+
+
+def summarize_article(db, title, text):
+    excerpt = text[:3000].strip()
+    instruction = get_meta(db, "llm_instruction", DEFAULT_INSTRUCTION)
+    prompt = PROMPT_PREFIX.format(title=title, excerpt=excerpt) + instruction
+    return ask_llm(prompt)
 
 
 def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
@@ -587,38 +569,55 @@ def send_feed_item(db, feed_url, feed_name, entry):
     )
     row = find_item_by_key(db, feed_url, entry["key"])
     item_id = row["id"]
-    tags = []
-    if GEMINI_API_KEY:
-        try:
-            tags = auto_tag_item(db, feed_url, entry)
-        except Exception as e:
-            log("auto-tag failed:", entry["title"], e)
-    text = format_item(feed_name, entry)
-    if tags:
-        text += "\n\n" + " ".join(tags)
     markup = {
         "inline_keyboard": [
             [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
         ]
     }
-    msg = None
+    all_chats = [TARGET_CHAT_ID] + SUBSCRIBER_CHAT_IDS
+    attachment = None
+    summary = entry.get("summary") or ""
     if entry.get("link"):
         if _is_youtube_feed(feed_url):
             try:
                 audio_bytes, filename = download_youtube_audio(entry["link"])
-                result = send_audio(TARGET_CHAT_ID, audio_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
-                msg = result["result"]
+                attachment = ("audio", audio_bytes, filename)
             except Exception as e:
                 log("audio download failed, sending text only:", entry["title"], e)
         else:
             try:
-                pdf_bytes = article_to_pdf_bytes(entry["link"], entry["title"])
+                log("fetching article:", entry["link"])
+                pdf_bytes, plain_text = article_to_pdf_bytes(entry["link"], entry["title"])
+                if OPENROUTER_API_KEY and plain_text:
+                    try:
+                        log("summarizing:", entry["title"])
+                        summary = summarize_article(db, entry["title"], plain_text)
+                    except Exception as e:
+                        log("summarize failed:", entry["title"], e)
                 safe_title = re.sub(r"[^\w\s-]", "", entry["title"])[:60].strip()
                 filename = re.sub(r"\s+", "-", safe_title).lower() + ".pdf"
-                result = send_document(TARGET_CHAT_ID, pdf_bytes, filename, caption=text, parse_mode="HTML", reply_markup=markup)
-                msg = result["result"]
+                attachment = ("pdf", pdf_bytes, filename)
             except Exception as e:
                 log("pdf failed, sending text only:", entry["title"], e)
+    text = format_item(feed_name, entry, summary=summary)
+    msg = None
+    for chat_id in all_chats:
+        sub_markup = markup if str(chat_id) == str(TARGET_CHAT_ID) else None
+        try:
+            if attachment:
+                kind, data, fname = attachment
+                if kind == "audio":
+                    result = send_audio(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup)
+                else:
+                    result = send_document(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup)
+                sent = result["result"]
+            else:
+                sent = send_message(chat_id, text, sub_markup, parse_mode="HTML")
+        except Exception as e:
+            log("send failed for chat", chat_id, ":", entry["title"], e)
+            continue
+        if str(chat_id) == str(TARGET_CHAT_ID):
+            msg = sent
     if msg is None:
         msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
     db.execute(
@@ -638,13 +637,11 @@ def send_feed_item(db, feed_url, feed_name, entry):
         ),
     )
     db.commit()
-    if tags:
-        save_item_tags(db, item_id, tags)
-        log("tagged:", entry["title"], " ".join(tags))
 
 
 def poll_feeds(db):
     feeds = db.execute("select url, label, title from feeds order by url").fetchall()
+    log(f"checking {len(feeds)} feed(s)")
     for feed in feeds:
         try:
             title, entries = fetch_feed(feed["url"])
@@ -654,6 +651,8 @@ def poll_feeds(db):
         db.execute("update feeds set title = ? where url = ?", (title, feed["url"]))
         db.commit()
         new_items = unsent_new_items(db, feed["url"], entries)
+        if new_items:
+            log(f"{len(new_items)} new item(s) in:", feed_display_name(feed["label"], feed["url"]))
         for entry in new_items:
             try:
                 send_feed_item(
@@ -698,10 +697,9 @@ def send_help(chat_id):
             "/delfeed <url>",
             "/exportfeeds",
             "/listsaved",
-            "/addtag <tag>",
-            "/deltag <tag>",
-            "/listtags",
             "/summary",
+            "/getprompt",
+            "/setprompt <prompt>",
             "/testfeed <url>",
             "/testall",
             "/testsend",
@@ -831,33 +829,6 @@ def handle_exportfeeds(db, chat_id):
     http_post_multipart(url, {"chat_id": chat_id}, "feeds.txt", content)
 
 
-def handle_addtag(db, chat_id, tag):
-    if not tag:
-        send_message(chat_id, "usage: /addtag <tag>")
-        return
-    tag = tag.strip().lower()
-    existing = db.execute("select id from tags where tag = ?", (tag,)).fetchone()
-    if existing:
-        send_message(chat_id, "tag already exists")
-        return
-    db.execute("insert into tags(tag) values(?)", (tag,))
-    db.commit()
-    send_message(chat_id, f"tag added: {tag}")
-
-
-def handle_deltag(db, chat_id, tag):
-    if not tag:
-        send_message(chat_id, "usage: /deltag <tag>")
-        return
-    tag = tag.strip().lower()
-    row = db.execute("select id from tags where tag = ?", (tag,)).fetchone()
-    if not row:
-        send_message(chat_id, "tag not found")
-        return
-    db.execute("delete from tags where tag = ?", (tag,))
-    db.commit()
-    send_message(chat_id, f"tag removed: {tag}")
-
 
 def handle_listsaved(db, chat_id):
     rows = db.execute(
@@ -865,7 +836,7 @@ def handle_listsaved(db, chat_id):
         select i.title, i.url, f.label, f.url as feed_url
         from items i
         left join feeds f on f.url = i.feed_url
-        where i.trello_saved = 1
+        where i.saved = 1
         order by i.seen_at desc
         """
     ).fetchall()
@@ -893,12 +864,18 @@ def handle_listsaved(db, chat_id):
         send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
 
 
-def handle_listtags(db, chat_id):
-    rows = db.execute("select tag from tags order by tag asc").fetchall()
-    if not rows:
-        send_message(chat_id, "no tags")
+def handle_getprompt(db, chat_id):
+    instruction = get_meta(db, "llm_instruction", DEFAULT_INSTRUCTION)
+    send_message(chat_id, f"<pre>{html_escape(instruction)}</pre>", parse_mode="HTML")
+
+
+def handle_setprompt(db, chat_id, text):
+    if not text:
+        send_message(chat_id, "usage: /setprompt <instruction>\n\nsets the instruction appended after the article excerpt")
         return
-    send_message(chat_id, "\n".join("#"+row["tag"] for row in rows))
+    set_meta(db, "llm_instruction", text)
+    log("llm instruction updated")
+    send_message(chat_id, "prompt instruction updated")
 
 
 def handle_testsend(db, chat_id):
@@ -958,13 +935,6 @@ def handle_testall(db, chat_id):
         entry = entries[0]
         feed_name = feed_display_name(feed["label"], feed["url"])
         text = format_item(feed_name, entry)
-        if GEMINI_API_KEY:
-            try:
-                tags = auto_tag_item(db, feed["url"], entry)
-                if tags:
-                    text += f"\n\ntags: {' '.join(tags)}"
-            except Exception as e:
-                text += f"\n\ntags: error ({e})"
         send_message(chat_id, text, parse_mode="HTML")
         time.sleep(1)
 
@@ -1085,32 +1055,34 @@ def handle_callback_query(db, update):
 
     if data.startswith("save:"):
         item_id = data.split(":", 1)[1]
-        row = db.execute("select id from items where id = ?", (item_id,)).fetchone()
+        row = db.execute("select id, title from items where id = ?", (item_id,)).fetchone()
         if not row:
             answer_callback_query(cb["id"], "item not found")
             return
         try:
-            db.execute("update items set trello_saved = 1 where id = ?", (row["id"],))
+            db.execute("update items set saved = 1 where id = ?", (row["id"],))
             db.commit()
             pin_message(chat_id, message_id)
             answer_callback_query(cb["id"], "saved")
             edit_reply_markup(chat_id, message_id, {
                 "inline_keyboard": [[{"text": "Remove from later", "callback_data": f"unsave:{row['id']}"}]]
             })
+            log("saved for later:", row["title"])
         except Exception as e:
             log("save failed:", e)
             answer_callback_query(cb["id"], "save failed")
 
     elif data.startswith("unsave:"):
         item_id = data.split(":", 1)[1]
-        row = db.execute("select id from items where id = ?", (item_id,)).fetchone()
+        row = db.execute("select id, title from items where id = ?", (item_id,)).fetchone()
         if not row:
             answer_callback_query(cb["id"], "item not found")
             return
-        db.execute("update items set trello_saved = 0, trello_card_url = null where id = ?", (row["id"],))
+        db.execute("update items set saved = 0 where id = ?", (row["id"],))
         db.commit()
         unpin_message(chat_id, message_id)
         answer_callback_query(cb["id"], "removed")
+        log("removed from later:", row["title"])
         edit_reply_markup(chat_id, message_id, {
             "inline_keyboard": [[{"text": "Save for later", "callback_data": f"save:{row['id']}"}]]
         })
@@ -1122,13 +1094,17 @@ def handle_callback_query(db, update):
 def handle_message(db, update):
     msg = update["message"]
     chat_id = msg["chat"]["id"]
+    username = msg.get("from", {}).get("username") or msg.get("from", {}).get("first_name") or str(chat_id)
     text = msg.get("text") or ""
+    if text:
+        log(f"message from {username} ({chat_id}): {text}")
     if not text.startswith("/"):
         return
     if not chat_allowed(chat_id):
         return
     cmd, arg = parse_command(text)
     cmd = cmd.split("@", 1)[0]
+    log(f"command: {cmd}" + (f" {arg}" if arg else ""))
     if cmd == "/help" or cmd == "/start":
         send_help(chat_id)
     elif cmd == "/listfeeds":
@@ -1141,12 +1117,6 @@ def handle_message(db, update):
         handle_exportfeeds(db, chat_id)
     elif cmd == "/listsaved":
         handle_listsaved(db, chat_id)
-    elif cmd == "/addtag":
-        handle_addtag(db, chat_id, arg)
-    elif cmd == "/deltag":
-        handle_deltag(db, chat_id, arg)
-    elif cmd == "/listtags":
-        handle_listtags(db, chat_id)
     elif cmd == "/summary":
         handle_summary(db, chat_id)
     elif cmd == "/testfeed":
@@ -1155,6 +1125,10 @@ def handle_message(db, update):
         handle_testall(db, chat_id)
     elif cmd == "/testsend":
         handle_testsend(db, chat_id)
+    elif cmd == "/getprompt":
+        handle_getprompt(db, chat_id)
+    elif cmd == "/setprompt":
+        handle_setprompt(db, chat_id, arg)
     elif cmd == "/getlog":
         handle_getlog(chat_id)
 
@@ -1208,11 +1182,15 @@ def main():
     db = open_db()
     backfill_published_ts(db)
     next_feed_check = 0
-    log("started")
+    first_run = True
+    log("starting up")
     while True:
         if time.time() >= next_feed_check:
             poll_feeds(db)
             next_feed_check = time.time() + CHECK_EVERY
+            if first_run:
+                first_run = False
+                log("ready")
         poll_telegram(db)
 
 

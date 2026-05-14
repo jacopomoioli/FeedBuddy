@@ -4,7 +4,6 @@ Telegram-based RSS reader that just makes sense.
 
 - polls RSS feeds
 - sends new posts to Telegram, with the full article as a readable PDF attachment (or audio for YouTube feeds)
-- tag posts with LLM-based auto-tagging
 - save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds & tags from Telegram
 
@@ -22,8 +21,9 @@ Edit it and set the right values. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` ar
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | | Bot token from `@BotFather` |
 | `TELEGRAM_CHAT_ID` | yes | | Only chat allowed to talk to the bot, and destination for notifications. Get it from `@GetMyIDo_Bot` |
-| `GEMINI_API_KEY` | no | | Enables LLM-based auto-tagging |
-| `GEMINI_MODEL` | no | `gemini-2.5-flash` | Model used for tagging |
+| `SUBSCRIBER_CHAT_IDS` | no | | Comma-separated chat IDs that receive posts but cannot run commands |
+| `OPENROUTER_API_KEY` | no | | OpenRouter API key |
+| `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model to use via OpenRouter |
 
 Then run it:
 
@@ -44,9 +44,6 @@ python3 feedbuddy.py
 | `/delfeed <url>` | Remove a feed |
 | `/exportfeeds` | Download the current feed list as `feeds.txt` |
 | `/listsaved` | List all posts saved for later |
-| `/addtag <tag>` | Add a tag for auto-tagging |
-| `/deltag <tag>` | Remove a tag |
-| `/listtags` | List all tags |
 | `/summary` | List every post seen today |
 | `/testfeed <url>` | Fetch and preview the latest post of a feed |
 | `/testall` | Fetch and preview the latest post of every feed |
