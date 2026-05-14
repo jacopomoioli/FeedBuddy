@@ -26,6 +26,7 @@ from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
 
 DB_PATH = "feedbuddy.db"
+LOG_PATH = "feedbuddy.log"
 USER_AGENT = "FeedBuddy/0.1"
 CHECK_EVERY = 300
 TELEGRAM_TIMEOUT = 50
@@ -58,7 +59,10 @@ def now():
 
 
 def log(*args):
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), *args, flush=True)
+    line = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " " + " ".join(str(a) for a in args)
+    print(line, flush=True)
+    with open(LOG_PATH, "a") as f:
+        f.write(line + "\n")
 
 
 def strip_html(text):
@@ -527,17 +531,32 @@ def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, r
     return http_post_multipart(tg_url, fields, filename, pdf_bytes, content_type="application/pdf")
 
 
+class _YtLogger:
+    def debug(self, msg):
+        if msg.startswith("[debug]"):
+            return
+        log("yt-dlp:", msg)
+    def info(self, msg):
+        log("yt-dlp:", msg)
+    def warning(self, msg):
+        log("yt-dlp warning:", msg)
+    def error(self, msg):
+        log("yt-dlp error:", msg)
+
+
 def download_youtube_audio(url):
+    log("downloading audio:", url)
     with tempfile.TemporaryDirectory() as tmpdir:
         opts = {
             "format": "bestaudio[ext=m4a][abr<=96]/bestaudio[abr<=96]/bestaudio[ext=m4a]/bestaudio",
             "outtmpl": os.path.join(tmpdir, "%(title)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
+            "logger": _YtLogger(),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             path = ydl.prepare_filename(info)
+            size_mb = os.path.getsize(path) / 1_000_000
+            log(f"audio ready: {os.path.basename(path)} ({size_mb:.1f} MB)")
             with open(path, "rb") as f:
                 return f.read(), os.path.basename(path)
 
@@ -665,6 +684,16 @@ def parse_command(text):
     return cmd, arg
 
 
+def handle_getlog(chat_id):
+    if not os.path.exists(LOG_PATH):
+        send_message(chat_id, "no log file yet")
+        return
+    with open(LOG_PATH, "rb") as f:
+        data = f.read()
+    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    http_post_multipart(tg_url, {"chat_id": str(chat_id)}, "feedbuddy.log", data, content_type="text/plain")
+
+
 def send_help(chat_id):
     text = "\n".join(
         [
@@ -681,6 +710,7 @@ def send_help(chat_id):
             "/testfeed <url>",
             "/testall",
             "/testsend",
+            "/getlog",
         ]
     )
     send_message(chat_id, text)
@@ -1500,6 +1530,8 @@ def handle_message(db, update):
         handle_testall(db, chat_id)
     elif cmd == "/testsend":
         handle_testsend(db, chat_id)
+    elif cmd == "/getlog":
+        handle_getlog(chat_id)
 
 
 def poll_telegram(db):
