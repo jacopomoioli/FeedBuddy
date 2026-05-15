@@ -1178,9 +1178,28 @@ def backfill_published_ts(db):
         log(f"backfilled published_ts for {len(rows)} items")
 
 
+def register_commands():
+    tg_api("setMyCommands", {"commands": [
+        {"command": "help",        "description": "List available commands"},
+        {"command": "listfeeds",   "description": "List all registered feeds"},
+        {"command": "addfeed",     "description": "Add a feed: label | <url>"},
+        {"command": "delfeed",     "description": "Remove a feed: <url>"},
+        {"command": "exportfeeds", "description": "Download feed list as feeds.txt"},
+        {"command": "listsaved",   "description": "List posts saved for later"},
+        {"command": "summary",     "description": "List every post seen today"},
+        {"command": "getprompt",   "description": "Show the current LLM instruction"},
+        {"command": "setprompt",   "description": "Edit the LLM instruction"},
+        {"command": "getlog",      "description": "Download the bot log file"},
+        {"command": "testfeed",    "description": "Preview latest post of a feed: <url>"},
+        {"command": "testall",     "description": "Preview latest post of every feed"},
+        {"command": "testsend",    "description": "Send a test post"},
+    ]})
+
+
 def main():
     db = open_db()
     backfill_published_ts(db)
+    register_commands()
     next_feed_check = 0
     first_run = True
     log("starting up")
