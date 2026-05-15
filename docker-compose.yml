@@ -1,0 +1,8 @@
+services:
+  feedbuddy:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./feedbuddy.db:/app/feedbuddy.db
+      - ./feedbuddy.log:/app/feedbuddy.log
+      - ./.env:/app/.env:ro

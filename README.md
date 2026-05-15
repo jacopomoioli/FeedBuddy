@@ -37,7 +37,15 @@ Edit it and set the right values. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` ar
 | `OPENROUTER_API_KEY` | no | | OpenRouter API key |
 | `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model to use via OpenRouter |
 
-Then run it:
+Then run it with Docker (recommended):
+
+```bash
+touch feedbuddy.db feedbuddy.log   # ensure these exist as files before mounting
+docker compose up -d
+docker compose logs -f             # tail logs
+```
+
+Or directly with Python:
 
 ```bash
 python3 -m venv .venv
@@ -45,6 +53,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python3 feedbuddy.py
 ```
+
 
 ## Telegram Commands
 
@@ -65,22 +74,6 @@ python3 feedbuddy.py
 | `/testsend` | Send a test post |
 
 Each post sent by the bot has a "Save for later" button. Pressing it pins the message in the chat. Pressing "Remove from later" unpins it.
-
-## CLI
-
-```bash
-# import feeds from a file (additive, skips existing URLs)
-python3 feedbuddy.py import <file>
-```
-
-The file format is one feed per line:
-
-```
-Label | https://example.com/feed.rss
-https://example.com/no-label.rss
-```
-
-Lines starting with `#` are ignored.
 
 
 ## Why
