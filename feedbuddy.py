@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import html as html_module
+
 import json
 import os
 import re
@@ -14,7 +14,7 @@ import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import escape as html_escape
-from html import escape
+
 
 import feedparser
 import requests
@@ -170,23 +170,7 @@ def open_db():
         )
         """
     )
-    db.execute(
-        """
-        create table if not exists tags (
-            id integer primary key autoincrement,
-            tag text not null unique
-        )
-        """
-    )
-    db.execute(
-        """
-        create table if not exists item_tags (
-            item_id integer not null references items(id),
-            tag text not null,
-            primary key (item_id, tag)
-        )
-        """
-    )
+
     db.execute(
         """
         create table if not exists meta (
@@ -264,21 +248,6 @@ def http_post_multipart(url, fields, filename, file_content, content_type="text/
         return json.loads(r.read().decode())
 
 
-def http_post_form(url, data, timeout=30):
-    payload = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = r.read()
-        if not body:
-            return {}
-        return json.loads(body.decode())
 
 
 def ask_llm(prompt):
@@ -672,7 +641,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
             entry["title"],
             entry["link"],
             entry["published"],
-            entry.get("summary"),
+            summary or entry.get("summary"),
             feed_url, entry["key"],
         ),
     )
@@ -1035,19 +1004,6 @@ def parse_date(value):
     return dt.astimezone()
 
 
-def fmt_time(value):
-    dt = parse_date(value)
-    if not dt:
-        return value or ""
-    return dt.strftime("%Y-%m-%d %H:%M")
-
-
-
-def find_item_by_message(db, chat_id, message_id):
-    return db.execute(
-        "select id from items where sent_chat_id = ? and sent_message_id = ?",
-        (str(chat_id), message_id),
-    ).fetchone()
 
 
 def find_item_by_key(db, feed_url, key):
