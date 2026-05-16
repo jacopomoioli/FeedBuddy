@@ -528,7 +528,31 @@ class _YtLogger:
         log("yt-dlp error:", msg)
 
 
-def download_youtube_audio(url):
+def fetch_youtube_transcript(url):
+    from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+    video_id = None
+    for pattern in (r"[?&]v=([^&]+)", r"youtu\.be/([^?]+)", r"shorts/([^?]+)"):
+        m = re.search(pattern, url)
+        if m:
+            video_id = m.group(1)
+            break
+    if not video_id:
+        return None
+    try:
+        ytt = YouTubeTranscriptApi()
+        transcript_list = ytt.list(video_id)
+        try:
+            t = transcript_list.find_transcript(["en", "en-US", "en-GB"])
+        except NoTranscriptFound:
+            t = next(iter(transcript_list))
+        fetched = t.fetch()
+        return " ".join(s.text for s in fetched).strip() or None
+    except (NoTranscriptFound, TranscriptsDisabled):
+        return None
+
+
+def download_youtube(url):
+    """Download audio via yt-dlp. Returns (audio_bytes, filename)."""
     log("downloading audio:", url)
     with tempfile.TemporaryDirectory() as tmpdir:
         opts = {
@@ -539,10 +563,11 @@ def download_youtube_audio(url):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             path = ydl.prepare_filename(info)
-            size_mb = os.path.getsize(path) / 1_000_000
-            log(f"audio ready: {os.path.basename(path)} ({size_mb:.1f} MB)")
-            with open(path, "rb") as f:
-                return f.read(), os.path.basename(path)
+        size_mb = os.path.getsize(path) / 1_000_000
+        log(f"audio ready: {os.path.basename(path)} ({size_mb:.1f} MB)")
+        with open(path, "rb") as f:
+            audio_bytes = f.read()
+        return audio_bytes, os.path.basename(path)
 
 
 def send_audio(chat_id, audio_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
@@ -588,8 +613,19 @@ def send_feed_item(db, feed_url, feed_name, entry):
     summary = entry.get("summary") or ""
     if entry.get("link"):
         if _is_youtube_feed(feed_url):
+            if OPENROUTER_API_KEY:
+                try:
+                    log("fetching transcript:", entry["link"])
+                    transcript = fetch_youtube_transcript(entry["link"])
+                    if transcript:
+                        summary = summarize_article(db, entry["title"], transcript)
+                        log("transcript summarized:", entry["title"])
+                    else:
+                        log("no transcript available:", entry["title"])
+                except Exception as e:
+                    log("transcript/summarize failed:", entry["title"], e)
             try:
-                audio_bytes, filename = download_youtube_audio(entry["link"])
+                audio_bytes, filename = download_youtube(entry["link"])
                 attachment = ("audio", audio_bytes, filename)
             except Exception as e:
                 log("audio download failed, sending text only:", entry["title"], e)
