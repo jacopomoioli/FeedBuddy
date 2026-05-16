@@ -706,6 +706,7 @@ def send_help(chat_id):
             "/delfeed <url>",
             "/exportfeeds",
             "/listsaved",
+            "/addgoated [title | ] <url>",
             "/listgoated",
             "/stats",
             "/getprompt",
@@ -870,6 +871,41 @@ def handle_listsaved(db, chat_id):
         size += len(line) + 1
     if chunk:
         send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
+
+
+def handle_addgoated(db, chat_id, arg):
+    if not arg:
+        send_message(chat_id, "usage: /addgoated [title | ] <url>")
+        return
+    parsed = parse_source_line(arg)
+    url = parsed["url"]
+    title = parsed["label"]
+    if not url.startswith(("http://", "https://")):
+        send_message(chat_id, "invalid url")
+        return
+    if not title:
+        try:
+            raw = http_get(url, timeout=15)
+            import re as _re
+            m = _re.search(rb"<title[^>]*>(.*?)</title>", raw, _re.IGNORECASE | _re.DOTALL)
+            title = m.group(1).decode("utf-8", errors="replace").strip() if m else url
+        except Exception:
+            title = url
+    existing = db.execute("select id from items where feed_url = 'manual' and item_key = ?", (url,)).fetchone()
+    if existing:
+        db.execute("update items set goated = 1, title = ? where id = ?", (title, existing["id"]))
+        db.commit()
+        send_message(chat_id, f"updated and marked as Goated: {title}")
+        return
+    db.execute(
+        """
+        insert into items(feed_url, item_key, title, url, goated, seen_at)
+        values('manual', ?, ?, ?, 1, ?)
+        """,
+        (url, title, url, now()),
+    )
+    db.commit()
+    send_message(chat_id, f"added to Goated: {title}")
 
 
 def handle_listgoated(db, chat_id):
@@ -1147,6 +1183,8 @@ def handle_message(db, update):
         handle_exportfeeds(db, chat_id)
     elif cmd == "/listsaved":
         handle_listsaved(db, chat_id)
+    elif cmd == "/addgoated":
+        handle_addgoated(db, chat_id, arg)
     elif cmd == "/listgoated":
         handle_listgoated(db, chat_id)
     elif cmd == "/stats":
@@ -1214,6 +1252,7 @@ def register_commands():
         {"command": "delfeed",     "description": "Remove a feed: <url>"},
         {"command": "exportfeeds", "description": "Download feed list as feeds.txt"},
         {"command": "listsaved",   "description": "List posts saved for later"},
+        {"command": "addgoated",   "description": "Add an external link to Goated"},
         {"command": "listgoated",  "description": "List goated posts (hall of fame)"},
         {"command": "stats",       "description": "Show reading stats"},
         {"command": "getprompt",   "description": "Show the current LLM instruction"},
