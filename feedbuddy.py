@@ -77,6 +77,29 @@ def strip_html(text):
     return " ".join(p._parts).strip()
 
 
+def extract_links_from_html(html):
+    """Return a deduplicated list of http(s) hrefs found in anchor tags."""
+    from html.parser import HTMLParser
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.links = []
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                for name, value in attrs:
+                    if name == "href" and value and value.startswith(("http://", "https://")):
+                        self.links.append(value.strip())
+    p = _P()
+    p.feed(html)
+    seen = set()
+    result = []
+    for link in p.links:
+        if link not in seen:
+            seen.add(link)
+            result.append(link)
+    return result
+
+
 def env(name, default=None, required=False):
     value = os.getenv(name, default)
     if required and not value:
@@ -356,6 +379,10 @@ def normalize_entry(entry):
     published_ts = datetime(*tp[:6], tzinfo=timezone.utc).isoformat() if tp else None
     raw_summary = entry.get("summary") or ""
     summary = strip_html(raw_summary)[:300].strip() if raw_summary else ""
+    content_list = entry.get("content") or []
+    raw_content = content_list[0].get("value", "") if content_list else raw_summary
+    all_links = extract_links_from_html(raw_content) or extract_links_from_html(raw_summary)
+    extra_links = [l for l in all_links if l != link]
     return {
         "key": key,
         "title": title,
@@ -363,6 +390,7 @@ def normalize_entry(entry):
         "published": published,
         "published_ts": published_ts,
         "summary": summary,
+        "extra_links": extra_links,
     }
 
 
@@ -441,6 +469,10 @@ def format_item(feed_name, entry, summary=None):
     if summary:
         parts.append(html_escape(summary))
     parts.append(entry["link"])
+    extra_links = entry.get("extra_links") or []
+    if extra_links:
+        links_text = "<i>Additional Links</i>\n" + "\n".join(extra_links)
+        parts.append(links_text)
     return "\n\n".join(parts)
 
 
