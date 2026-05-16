@@ -706,13 +706,10 @@ def send_help(chat_id):
             "/exportfeeds",
             "/listsaved",
             "/listgoated",
-            "/summary",
             "/stats",
             "/getprompt",
             "/setprompt <prompt>",
             "/testfeed <url>",
-
-            "/testsend",
             "/getlog",
         ]
     )
@@ -963,19 +960,6 @@ def handle_setprompt(db, chat_id, text):
     send_message(chat_id, "prompt instruction updated")
 
 
-def handle_testsend(db, chat_id):
-    entry = {
-        "key": f"test:{int(time.time())}",
-        "title": "FeedBuddy test post",
-        "link": "https://example.com/feedbuddy-test",
-        "published": now(),
-    }
-    try:
-        send_feed_item(db, "feedbuddy:test", "FeedBuddy", entry)
-        send_message(chat_id, "test sent")
-    except Exception as e:
-        send_message(chat_id, f"test failed: {e}")
-
 
 def send_preview_item(chat_id, feed_name, entry):
     send_message(chat_id, format_item(feed_name, entry), parse_mode="HTML")
@@ -1025,49 +1009,6 @@ def fmt_time(value):
         return value or ""
     return dt.strftime("%Y-%m-%d %H:%M")
 
-
-def summary_rows_for_today(db):
-    today = datetime.now().astimezone().date()
-    rows = db.execute(
-        """
-        select title, url, published, seen_at, feed_url
-        from items
-        where sent_message_id is not null
-        order by seen_at asc
-        """
-    ).fetchall()
-    out = []
-    for row in rows:
-        dt = parse_date(row["published"]) or parse_date(row["seen_at"])
-        if dt and dt.date() == today:
-            out.append(row)
-    return out
-
-
-def handle_summary(db, chat_id):
-    rows = summary_rows_for_today(db)
-    if not rows:
-        send_message(chat_id, "no posts today")
-        return
-    lines = ["posts today:", ""]
-    for row in rows:
-        lines.append(row["title"] or "(no title)")
-        if row["url"]:
-            lines.append(row["url"])
-        if row["feed_url"]:
-            feed = db.execute(
-                "select label, url from feeds where url = ?",
-                (row["feed_url"],),
-            ).fetchone()
-            name = row["feed_url"]
-            if feed:
-                name = feed_display_name(feed["label"], feed["url"])
-            lines.append(f"feed: {name}")
-        lines.append("")
-    text = "\n".join(lines).strip()
-    if len(text) > 4000:
-        text = text[:3990].rstrip() + "\n..."
-    send_message(chat_id, text)
 
 
 def find_item_by_message(db, chat_id, message_id):
@@ -1222,13 +1163,8 @@ def handle_message(db, update):
         handle_listgoated(db, chat_id)
     elif cmd == "/stats":
         handle_stats(db, chat_id)
-    elif cmd == "/summary":
-        handle_summary(db, chat_id)
     elif cmd == "/testfeed":
         handle_testfeed(db, chat_id, arg)
-
-    elif cmd == "/testsend":
-        handle_testsend(db, chat_id)
     elif cmd == "/getprompt":
         handle_getprompt(db, chat_id)
     elif cmd == "/setprompt":
@@ -1292,13 +1228,10 @@ def register_commands():
         {"command": "listsaved",   "description": "List posts saved for later"},
         {"command": "listgoated",  "description": "List goated posts (hall of fame)"},
         {"command": "stats",       "description": "Show reading stats"},
-        {"command": "summary",     "description": "List every post seen today"},
         {"command": "getprompt",   "description": "Show the current LLM instruction"},
         {"command": "setprompt",   "description": "Edit the LLM instruction"},
         {"command": "getlog",      "description": "Download the bot log file"},
         {"command": "testfeed",    "description": "Preview latest post of a feed: <url>"},
-
-        {"command": "testsend",    "description": "Send a test post"},
     ]})
 
 
