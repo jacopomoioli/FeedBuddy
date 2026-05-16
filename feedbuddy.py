@@ -122,6 +122,10 @@ def open_db():
         db.execute("alter table items add column saved integer not null default 0")
         if "trello_saved" in item_cols:
             db.execute("update items set saved = trello_saved")
+    if item_cols and "goated" not in item_cols:
+        db.execute("alter table items add column goated integer not null default 0")
+    if item_cols and "read_at" not in item_cols:
+        db.execute("alter table items add column read_at text")
     db.execute(
         """
         create table if not exists items (
@@ -136,6 +140,8 @@ def open_db():
             sent_chat_id text,
             sent_message_id integer,
             saved integer not null default 0,
+            goated integer not null default 0,
+            read_at text,
             seen_at text not null,
             unique(feed_url, item_key)
         )
@@ -571,7 +577,9 @@ def send_feed_item(db, feed_url, feed_name, entry):
     item_id = row["id"]
     markup = {
         "inline_keyboard": [
-            [{"text": "Save for later", "callback_data": f"save:{item_id}"}]
+            [{"text": "Mark as Read", "callback_data": f"markread:{item_id}"}],
+            [{"text": "Save for later", "callback_data": f"save:{item_id}"}],
+            [{"text": "Add to Goated", "callback_data": f"goat:{item_id}"}],
         ]
     }
     all_chats = [TARGET_CHAT_ID] + SUBSCRIBER_CHAT_IDS
@@ -697,11 +705,13 @@ def send_help(chat_id):
             "/delfeed <url>",
             "/exportfeeds",
             "/listsaved",
+            "/listgoated",
             "/summary",
+            "/stats",
             "/getprompt",
             "/setprompt <prompt>",
             "/testfeed <url>",
-            "/testall",
+
             "/testsend",
             "/getlog",
         ]
@@ -864,6 +874,81 @@ def handle_listsaved(db, chat_id):
         send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
 
 
+def handle_listgoated(db, chat_id):
+    rows = db.execute(
+        """
+        select i.title, i.url, f.label, f.url as feed_url
+        from items i
+        left join feeds f on f.url = i.feed_url
+        where i.goated = 1
+        order by i.seen_at desc
+        """
+    ).fetchall()
+    if not rows:
+        send_message(chat_id, "no goated items yet")
+        return
+    lines = []
+    for row in rows:
+        title = html_escape(row["title"] or "(no title)")
+        url = html_escape(row["url"] or "")
+        feed_name = html_escape(feed_display_name(row["label"], row["feed_url"] or ""))
+        lines.append(f"<b><a href=\"{url}\">{title}</a></b>")
+        lines.append(f"<i>{feed_name}</i>")
+        lines.append("")
+    chunk = []
+    size = 0
+    for line in lines:
+        if size + len(line) + 1 > 3500:
+            send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
+            chunk = []
+            size = 0
+        chunk.append(line)
+        size += len(line) + 1
+    if chunk:
+        send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
+
+
+def handle_stats(db, chat_id):
+    total = db.execute("select count(*) from items where sent_message_id is not null").fetchone()[0]
+    read = db.execute("select count(*) from items where read_at is not null").fetchone()[0]
+    saved = db.execute("select count(*) from items where saved = 1").fetchone()[0]
+    goated = db.execute("select count(*) from items where goated = 1").fetchone()[0]
+    today = db.execute(
+        "select count(*) from items where seen_at >= date('now')"
+    ).fetchone()[0]
+    this_week = db.execute(
+        "select count(*) from items where seen_at >= date('now', '-7 days')"
+    ).fetchone()[0]
+    read_pct = f"{read / total * 100:.0f}%" if total else "n/a"
+    top_feeds = db.execute(
+        """
+        select coalesce(f.label, i.feed_url) as name, count(*) as n
+        from items i
+        left join feeds f on f.url = i.feed_url
+        where i.sent_message_id is not null
+        group by i.feed_url
+        order by n desc
+        limit 5
+        """
+    ).fetchall()
+    lines = [
+        "<b>Stats</b>",
+        "",
+        f"Total articles seen: <b>{total}</b>",
+        f"Read: <b>{read}</b> ({read_pct})",
+        f"Saved for later: <b>{saved}</b>",
+        f"Goated: <b>{goated}</b>",
+        "",
+        f"Seen today: <b>{today}</b>",
+        f"Seen this week: <b>{this_week}</b>",
+        "",
+        "<b>Top feeds (all time)</b>",
+    ]
+    for row in top_feeds:
+        lines.append(f"  {html_escape(row['name'])} — {row['n']}")
+    send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+
+
 def handle_getprompt(db, chat_id):
     instruction = get_meta(db, "llm_instruction", DEFAULT_INSTRUCTION)
     send_message(chat_id, f"<pre>{html_escape(instruction)}</pre>", parse_mode="HTML")
@@ -917,26 +1002,6 @@ def handle_testfeed(db, chat_id, url):
         return
     send_preview_item(chat_id, feed_name, entries[0])
 
-
-def handle_testall(db, chat_id):
-    feeds = list_feeds(db)
-    if not feeds:
-        send_message(chat_id, "no feeds")
-        return
-    for feed in feeds:
-        try:
-            _, entries = fetch_feed(feed["url"])
-        except Exception as e:
-            send_message(chat_id, f"{feed_display_name(feed['label'], feed['url'])}\n\nerror: {e}")
-            continue
-        if not entries:
-            send_message(chat_id, f"{feed_display_name(feed['label'], feed['url'])}\n\nno entries")
-            continue
-        entry = entries[0]
-        feed_name = feed_display_name(feed["label"], feed["url"])
-        text = format_item(feed_name, entry)
-        send_message(chat_id, text, parse_mode="HTML")
-        time.sleep(1)
 
 
 def parse_date(value):
@@ -1020,6 +1085,13 @@ def find_item_by_key(db, feed_url, key):
 
 
 
+def item_markup(row):
+    read_btn = {"text": "Mark as Unread", "callback_data": f"unmarkread:{row['id']}"} if row["read_at"] else {"text": "Mark as Read", "callback_data": f"markread:{row['id']}"}
+    save_btn = {"text": "Remove from later", "callback_data": f"unsave:{row['id']}"} if row["saved"] else {"text": "Save for later", "callback_data": f"save:{row['id']}"}
+    goat_btn = {"text": "Remove from Goated", "callback_data": f"ungoat:{row['id']}"} if row["goated"] else {"text": "Add to Goated", "callback_data": f"goat:{row['id']}"}
+    return {"inline_keyboard": [[read_btn], [save_btn], [goat_btn]]}
+
+
 def pin_message(chat_id, message_id):
     try:
         tg_api("pinChatMessage", {"chat_id": chat_id, "message_id": message_id, "disable_notification": True})
@@ -1052,40 +1124,69 @@ def handle_callback_query(db, update):
     if not chat_allowed(chat_id):
         return
     data = cb.get("data") or ""
+    action, _, item_id = data.partition(":")
+    if not item_id:
+        answer_callback_query(cb["id"], "unknown action")
+        return
 
-    if data.startswith("save:"):
-        item_id = data.split(":", 1)[1]
-        row = db.execute("select id, title from items where id = ?", (item_id,)).fetchone()
-        if not row:
-            answer_callback_query(cb["id"], "item not found")
-            return
+    row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+    if not row:
+        answer_callback_query(cb["id"], "item not found")
+        return
+
+    if action == "markread":
+        db.execute("update items set read_at = ? where id = ?", (now(), row["id"]))
+        db.commit()
+        row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+        answer_callback_query(cb["id"], "marked as read")
+        log("marked as read:", row["title"])
+        edit_reply_markup(chat_id, message_id, item_markup(row))
+
+    elif action == "unmarkread":
+        db.execute("update items set read_at = null where id = ?", (row["id"],))
+        db.commit()
+        row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+        answer_callback_query(cb["id"], "marked as unread")
+        log("marked as unread:", row["title"])
+        edit_reply_markup(chat_id, message_id, item_markup(row))
+
+    elif action == "save":
         try:
             db.execute("update items set saved = 1 where id = ?", (row["id"],))
             db.commit()
             pin_message(chat_id, message_id)
+            row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
             answer_callback_query(cb["id"], "saved")
-            edit_reply_markup(chat_id, message_id, {
-                "inline_keyboard": [[{"text": "Remove from later", "callback_data": f"unsave:{row['id']}"}]]
-            })
             log("saved for later:", row["title"])
+            edit_reply_markup(chat_id, message_id, item_markup(row))
         except Exception as e:
             log("save failed:", e)
             answer_callback_query(cb["id"], "save failed")
 
-    elif data.startswith("unsave:"):
-        item_id = data.split(":", 1)[1]
-        row = db.execute("select id, title from items where id = ?", (item_id,)).fetchone()
-        if not row:
-            answer_callback_query(cb["id"], "item not found")
-            return
+    elif action == "unsave":
         db.execute("update items set saved = 0 where id = ?", (row["id"],))
         db.commit()
         unpin_message(chat_id, message_id)
-        answer_callback_query(cb["id"], "removed")
+        row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+        answer_callback_query(cb["id"], "removed from later")
         log("removed from later:", row["title"])
-        edit_reply_markup(chat_id, message_id, {
-            "inline_keyboard": [[{"text": "Save for later", "callback_data": f"save:{row['id']}"}]]
-        })
+        edit_reply_markup(chat_id, message_id, item_markup(row))
+
+    elif action == "goat":
+        db.execute("update items set goated = 1 where id = ?", (row["id"],))
+        db.commit()
+        row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+        answer_callback_query(cb["id"], "added to Goated")
+        log("goated:", row["title"])
+        edit_reply_markup(chat_id, message_id, item_markup(row))
+
+    elif action == "ungoat":
+        db.execute("update items set goated = 0 where id = ?", (row["id"],))
+        db.commit()
+        row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
+        answer_callback_query(cb["id"], "removed from Goated")
+        log("un-goated:", row["title"])
+        edit_reply_markup(chat_id, message_id, item_markup(row))
 
     else:
         answer_callback_query(cb["id"], "unknown action")
@@ -1117,12 +1218,15 @@ def handle_message(db, update):
         handle_exportfeeds(db, chat_id)
     elif cmd == "/listsaved":
         handle_listsaved(db, chat_id)
+    elif cmd == "/listgoated":
+        handle_listgoated(db, chat_id)
+    elif cmd == "/stats":
+        handle_stats(db, chat_id)
     elif cmd == "/summary":
         handle_summary(db, chat_id)
     elif cmd == "/testfeed":
         handle_testfeed(db, chat_id, arg)
-    elif cmd == "/testall":
-        handle_testall(db, chat_id)
+
     elif cmd == "/testsend":
         handle_testsend(db, chat_id)
     elif cmd == "/getprompt":
@@ -1186,12 +1290,14 @@ def register_commands():
         {"command": "delfeed",     "description": "Remove a feed: <url>"},
         {"command": "exportfeeds", "description": "Download feed list as feeds.txt"},
         {"command": "listsaved",   "description": "List posts saved for later"},
+        {"command": "listgoated",  "description": "List goated posts (hall of fame)"},
+        {"command": "stats",       "description": "Show reading stats"},
         {"command": "summary",     "description": "List every post seen today"},
         {"command": "getprompt",   "description": "Show the current LLM instruction"},
         {"command": "setprompt",   "description": "Edit the LLM instruction"},
         {"command": "getlog",      "description": "Download the bot log file"},
         {"command": "testfeed",    "description": "Preview latest post of a feed: <url>"},
-        {"command": "testall",     "description": "Preview latest post of every feed"},
+
         {"command": "testsend",    "description": "Send a test post"},
     ]})
 
