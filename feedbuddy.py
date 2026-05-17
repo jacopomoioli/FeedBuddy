@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-
-
 import json
 import os
 import re
@@ -11,14 +9,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from html import escape as html_escape
-
-
 import feedparser
 import requests
 import yt_dlp
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from html import escape as html_escape
+from curl_cffi import requests as curl_requests
 from readability import Document
 from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
@@ -28,6 +25,12 @@ LOG_PATH = "feedbuddy.log"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 CHECK_EVERY = 300
 TELEGRAM_TIMEOUT = 50
+BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
+TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
+_raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
+SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
 
 def load_dotenv(path=".env"):
@@ -64,7 +67,6 @@ def log(*args):
 
 
 def strip_html(text):
-    """Strip HTML tags and decode entities, returning plain text."""
     from html.parser import HTMLParser
     class _P(HTMLParser):
         def __init__(self):
@@ -78,7 +80,6 @@ def strip_html(text):
 
 
 def extract_links_from_html(html):
-    """Return a deduplicated list of http(s) hrefs found in anchor tags."""
     from html.parser import HTMLParser
     class _P(HTMLParser):
         def __init__(self):
@@ -110,12 +111,6 @@ def env(name, default=None, required=False):
 
 load_dotenv()
 
-BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
-TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
-_raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
-SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
-OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
 
 def open_db():
@@ -200,13 +195,7 @@ def set_meta(db, key, value):
 
 
 def http_get(url, timeout=30):
-    try:
-        from curl_cffi import requests as curl_requests
-        return curl_requests.get(url, impersonate="chrome124", timeout=timeout).content
-    except ImportError:
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
+    return curl_requests.get(url, impersonate="chrome124", timeout=timeout).content
 
 
 def http_post_json(url, data, timeout=30):
@@ -477,15 +466,7 @@ def _is_youtube_feed(feed_url):
 
 
 def article_to_pdf_bytes(url, title):
-    try:
-        from curl_cffi import requests as curl_requests
-        r = curl_requests.get(url, impersonate="chrome124", timeout=20)
-    except ImportError:
-        r = requests.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }, timeout=20)
+    r = curl_requests.get(url, impersonate="chrome124", timeout=20)
     r.raise_for_status()
     try:
         html = r.content.decode("utf-8")
@@ -774,13 +755,7 @@ def resolve_youtube_feed(url):
     if m:
         return f"{_YT_FEED_BASE}?channel_id={m.group(1)}"
     # /@handle or /user/name — scrape the page for the RSS <link> tag
-    try:
-        from curl_cffi import requests as curl_requests
-        html = curl_requests.get(url, impersonate="chrome124", timeout=15).text
-    except ImportError:
-        req = urllib.request.Request(url, headers={"User-Agent": _YT_SCRAPE_UA})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            html = r.read().decode("utf-8", errors="replace")
+    html = curl_requests.get(url, impersonate="chrome124", timeout=15).text
     m = re.search(
         r'href="(https://www\.youtube\.com/feeds/videos\.xml\?channel_id=[^"]+)"',
         html,

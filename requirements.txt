@@ -21,6 +21,8 @@ tinycss2==1.5.1
 tinyhtml5==2.1.0
 urllib3==2.7.0
 weasyprint==68.1
+cffi==2.0.0
+curl_cffi==0.15.0
 webencodings==0.5.1
 yt-dlp==2026.3.17
 openai-whisper==20250625
