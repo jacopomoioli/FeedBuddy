@@ -25,7 +25,7 @@ from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
 DB_PATH = "feedbuddy.db"
 LOG_PATH = "feedbuddy.log"
-USER_AGENT = "FeedBuddy/0.1"
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 CHECK_EVERY = 300
 TELEGRAM_TIMEOUT = 50
 
@@ -200,9 +200,13 @@ def set_meta(db, key, value):
 
 
 def http_get(url, timeout=30):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    try:
+        from curl_cffi import requests as curl_requests
+        return curl_requests.get(url, impersonate="chrome124", timeout=timeout).content
+    except ImportError:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
 
 
 def http_post_json(url, data, timeout=30):
@@ -473,7 +477,15 @@ def _is_youtube_feed(feed_url):
 
 
 def article_to_pdf_bytes(url, title):
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FeedBuddy/1.0)"}, timeout=20)
+    try:
+        from curl_cffi import requests as curl_requests
+        r = curl_requests.get(url, impersonate="chrome124", timeout=20)
+    except ImportError:
+        r = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }, timeout=20)
     r.raise_for_status()
     try:
         html = r.content.decode("utf-8")
@@ -762,9 +774,13 @@ def resolve_youtube_feed(url):
     if m:
         return f"{_YT_FEED_BASE}?channel_id={m.group(1)}"
     # /@handle or /user/name — scrape the page for the RSS <link> tag
-    req = urllib.request.Request(url, headers={"User-Agent": _YT_SCRAPE_UA})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        html = r.read().decode("utf-8", errors="replace")
+    try:
+        from curl_cffi import requests as curl_requests
+        html = curl_requests.get(url, impersonate="chrome124", timeout=15).text
+    except ImportError:
+        req = urllib.request.Request(url, headers={"User-Agent": _YT_SCRAPE_UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8", errors="replace")
     m = re.search(
         r'href="(https://www\.youtube\.com/feeds/videos\.xml\?channel_id=[^"]+)"',
         html,
