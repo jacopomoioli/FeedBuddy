@@ -63,6 +63,7 @@ _raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
 SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+SCORE_THRESHOLD = int(env("SCORE_THRESHOLD", "6"))
 PROMPT_PREFIX = "Article: {title}\n\n{excerpt}\n\n"
 DEFAULT_INSTRUCTION = "Write a 2-3 sentence summary of the key points. Be concise and direct. No preamble."
 
@@ -145,6 +146,8 @@ def open_db():
         db.execute("alter table items add column goated integer not null default 0")
     if item_cols and "read_at" not in item_cols:
         db.execute("alter table items add column read_at text")
+    if item_cols and "score" not in item_cols:
+        db.execute("alter table items add column score integer")
     db.execute(
         """
         create table if not exists items (
@@ -161,6 +164,7 @@ def open_db():
             saved integer not null default 0,
             goated integer not null default 0,
             read_at text,
+            score integer,
             seen_at text not null,
             unique(feed_url, item_key)
         )
@@ -264,6 +268,26 @@ def ask_llm(prompt):
             raise RuntimeError(f"OpenRouter {e.response.status_code}: {e.response.text}")
 
 
+def score_article(db, title, summary):
+    interests = get_meta(db, "interests")
+    if not interests or not OPENROUTER_API_KEY:
+        return None
+    prompt = (
+        "Rate this article's relevance to the following interests on a scale from 1 to 10.\n"
+        "Reply with only a single integer, nothing else.\n\n"
+        f"Interests: {interests}\n\n"
+        f"Article: {title}\n"
+        f"Summary: {summary}"
+    )
+    try:
+        result = ask_llm(prompt)
+        score = int(re.search(r"\d+", result).group())
+        return max(1, min(10, score))
+    except Exception as e:
+        log("score_article failed:", e)
+        return None
+
+
 def tg_api(method, data):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     reply = http_post_json(url, data, timeout=TELEGRAM_TIMEOUT + 10)
@@ -272,7 +296,7 @@ def tg_api(method, data):
     return reply["result"]
 
 
-def send_message(chat_id, text, reply_markup=None, parse_mode=None):
+def send_message(chat_id, text, reply_markup=None, parse_mode=None, disable_notification=False):
     data = {
         "chat_id": chat_id,
         "text": text,
@@ -282,6 +306,8 @@ def send_message(chat_id, text, reply_markup=None, parse_mode=None):
         data["reply_markup"] = reply_markup
     if parse_mode:
         data["parse_mode"] = parse_mode
+    if disable_notification:
+        data["disable_notification"] = True
     return tg_api("sendMessage", data)
 
 
@@ -424,7 +450,7 @@ def unsent_new_items(db, feed_url, entries):
     return out
 
 
-def format_item(feed_name, entry, summary=None):
+def format_item(feed_name, entry, summary=None, score=None):
     parts = []
     if feed_name:
         parts.append(f"<i>{html_escape(feed_name)}</i>")
@@ -436,6 +462,8 @@ def format_item(feed_name, entry, summary=None):
     if extra_links:
         links_text = "<i>Additional Links</i>\n" + "\n".join(extra_links)
         parts.append(links_text)
+    if score is not None:
+        parts.append(f"<i>· relevance {score}/10</i>")
     return "\n\n".join(parts)
 
 
@@ -493,7 +521,7 @@ def summarize_article(db, title, text):
     return ask_llm(prompt)
 
 
-def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
+def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, reply_markup=None, disable_notification=False):
     fields = {"chat_id": str(chat_id)}
     if caption:
         fields["caption"] = caption[:1024]
@@ -501,6 +529,8 @@ def send_document(chat_id, pdf_bytes, filename, caption=None, parse_mode=None, r
         fields["parse_mode"] = parse_mode
     if reply_markup:
         fields["reply_markup"] = json.dumps(reply_markup)
+    if disable_notification:
+        fields["disable_notification"] = "true"
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     return http_post_multipart(tg_url, fields, filename, pdf_bytes, content_type="application/pdf")
 
@@ -551,7 +581,7 @@ def download_youtube(url):
     return audio_bytes, os.path.basename(path), transcript
 
 
-def send_audio(chat_id, audio_bytes, filename, caption=None, parse_mode=None, reply_markup=None):
+def send_audio(chat_id, audio_bytes, filename, caption=None, parse_mode=None, reply_markup=None, disable_notification=False):
     fields = {"chat_id": str(chat_id)}
     if caption:
         fields["caption"] = caption[:1024]
@@ -559,6 +589,8 @@ def send_audio(chat_id, audio_bytes, filename, caption=None, parse_mode=None, re
         fields["parse_mode"] = parse_mode
     if reply_markup:
         fields["reply_markup"] = json.dumps(reply_markup)
+    if disable_notification:
+        fields["disable_notification"] = "true"
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio"
     return http_post_multipart(tg_url, fields, filename, audio_bytes, content_type="audio/mp4", field_name="audio")
 
@@ -620,7 +652,11 @@ def send_feed_item(db, feed_url, feed_name, entry):
                 attachment = ("pdf", pdf_bytes, filename)
             except Exception as e:
                 log("pdf failed, sending text only:", entry["title"], e)
-    text = format_item(feed_name, entry, summary=summary)
+    score = score_article(db, entry["title"], summary) if summary else None
+    if score is not None:
+        log(f"relevance {score}/10:", entry["title"])
+    silent = score is not None and score < SCORE_THRESHOLD
+    text = format_item(feed_name, entry, summary=summary, score=score)
     msg = None
     for chat_id in all_chats:
         sub_markup = markup if str(chat_id) == str(TARGET_CHAT_ID) else None
@@ -628,23 +664,23 @@ def send_feed_item(db, feed_url, feed_name, entry):
             if attachment:
                 kind, data, fname = attachment
                 if kind == "audio":
-                    result = send_audio(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup)
+                    result = send_audio(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup, disable_notification=silent)
                 else:
-                    result = send_document(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup)
+                    result = send_document(chat_id, data, fname, caption=text, parse_mode="HTML", reply_markup=sub_markup, disable_notification=silent)
                 sent = result["result"]
             else:
-                sent = send_message(chat_id, text, sub_markup, parse_mode="HTML")
+                sent = send_message(chat_id, text, sub_markup, parse_mode="HTML", disable_notification=silent)
         except Exception as e:
             log("send failed for chat", chat_id, ":", entry["title"], e)
             continue
         if str(chat_id) == str(TARGET_CHAT_ID):
             msg = sent
     if msg is None:
-        msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML")
+        msg = send_message(TARGET_CHAT_ID, text, markup, parse_mode="HTML", disable_notification=silent)
     db.execute(
         """
         update items
-        set sent_chat_id = ?, sent_message_id = ?, title = ?, url = ?, published = ?, summary = ?
+        set sent_chat_id = ?, sent_message_id = ?, title = ?, url = ?, published = ?, summary = ?, score = ?
         where feed_url = ? and item_key = ?
         """,
         (
@@ -654,6 +690,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
             entry["link"],
             entry["published"],
             summary or entry.get("summary"),
+            score,
             feed_url, entry["key"],
         ),
     )
@@ -723,6 +760,8 @@ def send_help(chat_id):
             "/stats",
             "/getprompt",
             "/setprompt <prompt>",
+            "/setinterests <text>",
+            "/getinterests",
             "/testfeed <url>",
             "/getlog",
         ]
@@ -1008,6 +1047,22 @@ def handle_setprompt(db, chat_id, text):
 
 
 
+def handle_setinterests(db, chat_id, text):
+    if not text:
+        send_message(chat_id, "usage: /setinterests <description of what you care about>")
+        return
+    set_meta(db, "interests", text)
+    send_message(chat_id, "interests saved — articles will be scored against this profile")
+
+
+def handle_getinterests(db, chat_id):
+    interests = get_meta(db, "interests")
+    if not interests:
+        send_message(chat_id, "no interests set — use /setinterests")
+        return
+    send_message(chat_id, f"<pre>{html_escape(interests)}</pre>\n\nThreshold: {SCORE_THRESHOLD}/10 (set SCORE_THRESHOLD env var to change)", parse_mode="HTML")
+
+
 def send_preview_item(chat_id, feed_name, entry):
     send_message(chat_id, format_item(feed_name, entry), parse_mode="HTML")
 
@@ -1205,6 +1260,10 @@ def handle_message(db, update):
         handle_getprompt(db, chat_id)
     elif cmd == "/setprompt":
         handle_setprompt(db, chat_id, arg)
+    elif cmd == "/setinterests":
+        handle_setinterests(db, chat_id, arg)
+    elif cmd == "/getinterests":
+        handle_getinterests(db, chat_id)
     elif cmd == "/getlog":
         handle_getlog(chat_id)
 
@@ -1267,6 +1326,8 @@ def register_commands():
         {"command": "stats",       "description": "Show reading stats"},
         {"command": "getprompt",   "description": "Show the current LLM instruction"},
         {"command": "setprompt",   "description": "Edit the LLM instruction"},
+        {"command": "setinterests", "description": "Set your interest profile for relevance scoring"},
+        {"command": "getinterests", "description": "Show interest profile and score threshold"},
         {"command": "getlog",      "description": "Download the bot log file"},
         {"command": "testfeed",    "description": "Preview latest post of a feed: <url>"},
     ]})
