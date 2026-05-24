@@ -20,19 +20,6 @@ from readability import Document
 from weasyprint import HTML as WeasyprintHTML, CSS as WeasyprintCSS
 
 
-DB_PATH = "feedbuddy.db"
-LOG_PATH = "feedbuddy.log"
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-CHECK_EVERY = 300
-TELEGRAM_TIMEOUT = 50
-BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
-TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
-_raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
-SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
-OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-
-
 def load_dotenv(path=".env"):
     if not os.path.exists(path):
         return
@@ -53,6 +40,31 @@ def load_dotenv(path=".env"):
             if value and value[0] == value[-1] and value[0] in ("'", '"'):
                 value = value[1:-1]
             os.environ.setdefault(key, value)
+
+
+def env(name, default=None, required=False):
+    value = os.getenv(name, default)
+    if required and not value:
+        print("missing env:", name, file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
+load_dotenv()
+
+DB_PATH = "feedbuddy.db"
+LOG_PATH = "feedbuddy.log"
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+CHECK_EVERY = 300
+TELEGRAM_TIMEOUT = 50
+BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", required=True)
+TARGET_CHAT_ID = env("TELEGRAM_CHAT_ID", required=True)
+_raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
+SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+PROMPT_PREFIX = "Article: {title}\n\n{excerpt}\n\n"
+DEFAULT_INSTRUCTION = "Write a 2-3 sentence summary of the key points. Be concise and direct. No preamble."
 
 
 def now():
@@ -99,17 +111,6 @@ def extract_links_from_html(html):
             seen.add(link)
             result.append(link)
     return result
-
-
-def env(name, default=None, required=False):
-    value = os.getenv(name, default)
-    if required and not value:
-        print("missing env:", name, file=sys.stderr)
-        sys.exit(1)
-    return value
-
-
-load_dotenv()
 
 
 
@@ -485,10 +486,6 @@ def article_to_pdf_bytes(url, title):
     return pdf_bytes, plain_text
 
 
-PROMPT_PREFIX = "Article: {title}\n\n{excerpt}\n\n"
-DEFAULT_INSTRUCTION = "Write a 2-3 sentence summary of the key points. Be concise and direct. No preamble."
-
-
 def summarize_article(db, title, text):
     excerpt = text[:3000].strip()
     instruction = get_meta(db, "llm_instruction", DEFAULT_INSTRUCTION)
@@ -538,15 +535,17 @@ def download_youtube(url):
         size_mb = os.path.getsize(path) / 1_000_000
         log(f"audio ready: {os.path.basename(path)} ({size_mb:.1f} MB)")
         transcript = None
-        if OPENROUTER_API_KEY:
+        if OPENROUTER_API_KEY and size_mb <= 20:
             try:
                 log("transcribing with Whisper:", os.path.basename(path))
-                model = whisper.load_model("base")
+                model = whisper.load_model("tiny")
                 result = model.transcribe(path)
                 transcript = result["text"].strip() or None
                 log("transcription done:", os.path.basename(path))
             except Exception as e:
                 log("whisper transcription failed:", e)
+        elif OPENROUTER_API_KEY:
+            log(f"skipping transcription: audio too large ({size_mb:.1f} MB > 10 MB)")
         with open(path, "rb") as f:
             audio_bytes = f.read()
     return audio_bytes, os.path.basename(path), transcript
