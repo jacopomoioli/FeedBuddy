@@ -451,11 +451,13 @@ def unsent_new_items(db, feed_url, entries):
 
 def format_item(feed_name, entry, summary=None, score=None):
     parts = []
+    title = ""
     if feed_name:
-        parts.append(f"<i>{html_escape(feed_name)}</i>")
-    parts.append(f"<b>{html_escape(entry['title'])}</b>")
+        title = f"[<i>{html_escape(feed_name)}</i>]: "
+    title += f"<b>{html_escape(entry['title'])}</b>"
+    parts.append(title)
     if summary:
-        parts.append(html_escape(summary))
+        parts.append(f"<blockquote>{html_escape(summary)}</blockquote>")
     parts.append(entry["link"])
     extra_links = entry.get("extra_links") or []
     if extra_links:
