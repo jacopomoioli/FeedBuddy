@@ -453,16 +453,19 @@ def format_item(feed_name, entry, summary=None, score=None):
     parts = []
     title = ""
     if feed_name:
-        title = f"[<i>{html_escape(feed_name)}</i>]: "
+        title = f"<i>{html_escape(feed_name)}</i>: "
     title += f"<b>{html_escape(entry['title'])}</b>"
     parts.append(title)
     if summary:
         parts.append(f"<blockquote>{html_escape(summary)}</blockquote>")
-    parts.append(entry["link"])
+    parts.append(f'<a href="{entry["link"]}">View source</a>')
     extra_links = entry.get("extra_links") or []
     if extra_links:
-        links_text = "<i>Additional Links</i>\n" + "\n".join(extra_links)
-        parts.append(links_text)
+        bullets = "\n".join(
+            f'• <a href="{url}">{urllib.parse.urlparse(url).netloc}</a>'
+            for url in extra_links
+        )
+        parts.append(f"<i>Additional Links</i>\n{bullets}")
     if score is not None:
         parts.append(f"<i>Relevance: {score}/10</i>")
     return "\n\n".join(parts)
