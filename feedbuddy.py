@@ -63,7 +63,6 @@ _raw_subscribers = env("SUBSCRIBER_CHAT_IDS", "")
 SUBSCRIBER_CHAT_IDS = [s.strip() for s in _raw_subscribers.split(",") if s.strip()]
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = env("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-SCORE_THRESHOLD = int(env("SCORE_THRESHOLD", "6"))
 PROMPT_PREFIX = "Article: {title}\n\n{excerpt}\n\n"
 DEFAULT_INSTRUCTION = "Write a 2-3 sentence summary of the key points. Be concise and direct. No preamble."
 
@@ -463,7 +462,7 @@ def format_item(feed_name, entry, summary=None, score=None):
         links_text = "<i>Additional Links</i>\n" + "\n".join(extra_links)
         parts.append(links_text)
     if score is not None:
-        parts.append(f"<i>· relevance {score}/10</i>")
+        parts.append(f"<i>Relevance: {score}/10</i>")
     return "\n\n".join(parts)
 
 
@@ -655,7 +654,8 @@ def send_feed_item(db, feed_url, feed_name, entry):
     score = score_article(db, entry["title"], summary) if summary else None
     if score is not None:
         log(f"relevance {score}/10:", entry["title"])
-    silent = score is not None and score < SCORE_THRESHOLD
+    threshold = int(get_meta(db, "score_threshold", "6"))
+    silent = score is not None and score < threshold
     text = format_item(feed_name, entry, summary=summary, score=score)
     msg = None
     for chat_id in all_chats:
@@ -762,6 +762,7 @@ def send_help(chat_id):
             "/setprompt <prompt>",
             "/setinterests <text>",
             "/getinterests",
+            "/setthreshold <1-10>",
             "/testfeed <url>",
             "/getlog",
         ]
@@ -788,11 +789,11 @@ def is_youtube_channel_url(url):
 
 def resolve_youtube_feed(url):
     parsed = urllib.parse.urlparse(url)
-    # /channel/UCxxxxx — channel ID already present
+    # /channel/UCxxxxx: channel ID already present
     m = re.match(r"^/channel/(UC[\w-]+)$", parsed.path)
     if m:
         return f"{_YT_FEED_BASE}?channel_id={m.group(1)}"
-    # /@handle or /user/name — scrape the page for the RSS <link> tag
+    # /@handle or /user/name: scrape the page for the RSS <link> tag
     html = curl_requests.get(url, impersonate="chrome124", timeout=15).text
     m = re.search(
         r'href="(https://www\.youtube\.com/feeds/videos\.xml\?channel_id=[^"]+)"',
@@ -1052,15 +1053,24 @@ def handle_setinterests(db, chat_id, text):
         send_message(chat_id, "usage: /setinterests <description of what you care about>")
         return
     set_meta(db, "interests", text)
-    send_message(chat_id, "interests saved — articles will be scored against this profile")
+    send_message(chat_id, "interests saved. articles will be scored against this profile")
 
 
 def handle_getinterests(db, chat_id):
     interests = get_meta(db, "interests")
     if not interests:
-        send_message(chat_id, "no interests set — use /setinterests")
+        send_message(chat_id, "no interests set. use /setinterests")
         return
-    send_message(chat_id, f"<pre>{html_escape(interests)}</pre>\n\nThreshold: {SCORE_THRESHOLD}/10 (set SCORE_THRESHOLD env var to change)", parse_mode="HTML")
+    threshold = get_meta(db, "score_threshold", "6")
+    send_message(chat_id, f"<pre>{html_escape(interests)}</pre>\n\nSilent below: {threshold}/10 (change with /setthreshold)", parse_mode="HTML")
+
+
+def handle_setthreshold(db, chat_id, arg):
+    if not arg.strip().isdigit() or not (1 <= int(arg.strip()) <= 10):
+        send_message(chat_id, "usage: /setthreshold <1-10>")
+        return
+    set_meta(db, "score_threshold", arg.strip())
+    send_message(chat_id, f"threshold set to {arg.strip()}/10. articles scoring below this will be sent silently")
 
 
 def send_preview_item(chat_id, feed_name, entry):
@@ -1264,6 +1274,8 @@ def handle_message(db, update):
         handle_setinterests(db, chat_id, arg)
     elif cmd == "/getinterests":
         handle_getinterests(db, chat_id)
+    elif cmd == "/setthreshold":
+        handle_setthreshold(db, chat_id, arg)
     elif cmd == "/getlog":
         handle_getlog(chat_id)
 
@@ -1328,6 +1340,7 @@ def register_commands():
         {"command": "setprompt",   "description": "Edit the LLM instruction"},
         {"command": "setinterests", "description": "Set your interest profile for relevance scoring"},
         {"command": "getinterests", "description": "Show interest profile and score threshold"},
+        {"command": "setthreshold", "description": "Set the silence threshold (1-10)"},
         {"command": "getlog",      "description": "Download the bot log file"},
         {"command": "testfeed",    "description": "Preview latest post of a feed: <url>"},
     ]})
