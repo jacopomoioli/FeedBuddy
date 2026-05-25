@@ -26,8 +26,8 @@ Feed checks run every `CHECK_EVERY = 300` seconds. Because `poll_telegram` block
 Three tables:
 
 - **`feeds`** — registered feeds: `url` (PK), `label`, `title`, `added_at`
-- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `saved`, `seen_at`
-- **`meta`** — key/value store, used for `telegram_offset` (long-poll cursor) and `llm_instruction` (editable LLM prompt)
+- **`items`** — every article ever seen: `feed_url`, `item_key` (unique within feed), `title`, `url`, `published`, `published_ts`, `summary`, `sent_chat_id`, `sent_message_id`, `saved`, `goated`, `read_at`, `score`, `seen_at`
+- **`meta`** — key/value store: `telegram_offset` (long-poll cursor), `llm_instruction` (editable LLM prompt), `interests` (relevance scoring profile), `score_threshold` (silence threshold, default 6)
 
 An item is considered "sent" when `sent_message_id` is not null. New items are detected by checking `items` before sending — if the `(feed_url, item_key)` pair is absent, it's new.
 
@@ -41,7 +41,7 @@ An item is considered "sent" when `sent_message_id` is not null. New items are d
 
 **Minimal dependencies.** `feedparser`, `requests`, `readability-lxml`, `weasyprint`, and `yt-dlp` are external. HTTP calls to Telegram use `urllib`; OpenRouter calls use `requests`. HTML generation uses f-strings and `html.escape`. No template engine.
 
-**OpenRouter integration.** `ask_llm(prompt)` calls the OpenRouter API (OpenAI-compatible chat completions). `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` configure it. Default model: `google/gemini-2.5-flash`. When set, `summarize_article(title, text)` sends the first 3000 chars of extracted article text to the LLM and appends a 2-3 sentence summary to the Telegram caption.
+**OpenRouter integration.** `ask_llm(prompt)` calls the OpenRouter API (OpenAI-compatible chat completions). `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` configure it. Default model: `google/gemini-2.5-flash`. When set, `summarize_article(title, text)` sends the first 3000 chars of extracted article text to the LLM and appends a 2-3 sentence summary (rendered as a Telegram blockquote) to the message. `score_article(db, title, summary)` asks the LLM to rate the article 1-10 against the user's interest profile; articles scoring below `score_threshold` are delivered silently (`disable_notification=True`). Both features are no-ops when `OPENROUTER_API_KEY` is unset.
 
 **Article PDF attachment.** For non-YouTube feeds, each new item is fetched, extracted with `readability-lxml` (Firefox reader-mode algorithm), rendered to PDF via `weasyprint`, and sent as a `sendDocument` Telegram message with the formatted text as caption and the inline keyboard attached. If PDF generation fails for any reason the bot falls back to a plain text message.
 
@@ -57,9 +57,9 @@ Copy `.env.example` to `.env` and fill in the values. The `.env` loader is hand-
 | `TELEGRAM_CHAT_ID` | yes | — | Only chat allowed to talk to the bot, and destination for notifications |
 | `SUBSCRIBER_CHAT_IDS` | no | — | Comma-separated chat IDs that receive posts but cannot run commands |
 | `OPENROUTER_API_KEY` | no | — | OpenRouter API key |
-| `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model to use via OpenRouter |
+| `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model used for summarization and relevance scoring |
 
-Each Telegram message gets a "Save for later" inline button. Pressing it pins the message in the chat and marks it in the DB. Pressing "Remove from later" unpins it.
+Each Telegram message gets an inline keyboard with three buttons: "Mark as Read" (toggleable), "Save for later" (pins the message; toggleable), and "Add to Goated" (toggleable). The relevance score (`· relevance N/10`) is appended to messages when an interest profile is set.
 
 ## Running
 
@@ -94,14 +94,17 @@ The import command prints each URL as added or skipped, then exits. It does not 
 | `/addfeed label \| <url>` | Add a feed with an optional label |
 | `/delfeed <url>` | Remove a feed |
 | `/exportfeeds` | Send the current feed list as a `feeds.txt` attachment (sources.txt format) |
-| `/summary` | List all articles seen today |
 | `/listsaved` | List items saved for later |
+| `/addgoated [title \| ] <url>` | Manually add a URL to the Goated list |
+| `/listgoated` | List goated items |
+| `/stats` | Reading stats: totals, read rate, top feeds |
 | `/getprompt` | Show the current editable LLM instruction |
 | `/setprompt <text>` | Replace the LLM instruction (appended after the article excerpt) |
+| `/setinterests <text>` | Set interest profile used for relevance scoring |
+| `/getinterests` | Show current interest profile and silence threshold |
+| `/setthreshold <1-10>` | Set the score below which articles are delivered silently |
 | `/getlog` | Download the current `feedbuddy.log` file |
 | `/testfeed <url>` | Fetch and preview the latest entry of a feed (does not mark as sent) |
-| `/testall` | Preview the latest entry of every registered feed |
-| `/testsend` | Send a fake test article (marks it as sent in the DB) |
 
 Only `TARGET_CHAT_ID` can run commands. `SUBSCRIBER_CHAT_IDS` receive posts but cannot interact with the bot.
 
@@ -121,15 +124,15 @@ Lines starting with `#` are ignored.
 All code is in `feedbuddy.py`. Functions are grouped loosely:
 
 - **Setup**: `load_dotenv`, `env`, `open_db`, `get_meta`, `set_meta`
-- **HTTP helpers**: `http_get`, `http_post_json`, `http_post_form`, `http_post_multipart`
-- **OpenRouter**: `ask_llm`, `summarize_article`
+- **HTTP helpers**: `http_get`, `http_post_json`, `http_post_multipart`
+- **OpenRouter**: `ask_llm`, `summarize_article`, `score_article`
 - **PDF**: `_PDF_CSS`, `_is_youtube_feed`, `article_to_pdf_bytes`, `send_document`
-- **YouTube audio**: `download_youtube_audio`, `send_audio`
+- **YouTube audio**: `download_youtube`, `send_audio`
 - **Telegram**: `tg_api`, `send_message`, `answer_callback_query`, `edit_reply_markup`
 - **Feed file**: `parse_source_line`, `read_sources_file`
 - **YouTube**: `is_youtube_channel_url`, `resolve_youtube_feed`
 - **Feed logic**: `feed_title`, `fetch_feed`, `normalize_entry`, `item_key`, `feed_display_name`, `ensure_feed`, `delete_feed`, `list_feeds`, `unsent_new_items`, `format_item`, `send_feed_item`, `poll_feeds`
-- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_listsaved`, `handle_testsend`, `send_preview_item`, `handle_testfeed`, `handle_testall`, `handle_summary`, `handle_callback_query`, `handle_message`
+- **Telegram command handlers**: `handle_addfeed`, `handle_delfeed`, `handle_listfeeds`, `handle_exportfeeds`, `handle_listsaved`, `handle_addgoated`, `handle_listgoated`, `handle_stats`, `handle_getprompt`, `handle_setprompt`, `handle_setinterests`, `handle_getinterests`, `handle_setthreshold`, `send_preview_item`, `handle_testfeed`, `handle_callback_query`, `handle_message`
 - **Polling**: `poll_feeds`, `poll_telegram`
 - **Migrations**: `backfill_published_ts`
 - **Entry points**: `main`, `cmd_import`

@@ -4,9 +4,10 @@ Telegram-based RSS reader that just makes sense.
 
 - polls RSS feeds
 - sends new posts to Telegram, with the full article as a readable PDF attachment (or audio for YouTube feeds)
-- summarizes each article with an LLM
+- summarizes each article with an LLM (through openrouter), and gives them a relevance score based on your interests
 - save posts for later with a button in Telegram (pins the message in the chat)
 - manage feeds from Telegram
+
 
 ## Demo
 
@@ -28,16 +29,7 @@ cp .env.example .env
 ```
 
 Edit it and set the right values. `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are required.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | yes | | Bot token from `@BotFather` |
-| `TELEGRAM_CHAT_ID` | yes | | Only chat allowed to talk to the bot, and destination for notifications. Get it from `@GetMyIDo_Bot` |
-| `SUBSCRIBER_CHAT_IDS` | no | | Comma-separated chat IDs that receive posts but cannot run commands |
-| `OPENROUTER_API_KEY` | no | | OpenRouter API key |
-| `OPENROUTER_MODEL` | no | `google/gemini-2.5-flash` | Model to use via OpenRouter |
-
-Then run it with Docker (recommended):
+Then, run feedbuddy with Docker (recommended):
 
 ```bash
 touch feedbuddy.db feedbuddy.log   # ensure these exist as files before mounting
@@ -65,15 +57,18 @@ python3 feedbuddy.py
 | `/delfeed <url>` | Remove a feed |
 | `/exportfeeds` | Download the current feed list as `feeds.txt` |
 | `/listsaved` | List all posts saved for later |
-| `/summary` | List every post seen today |
+| `/addgoated [title \| ] <url>` | Manually add a URL to the Goated list |
+| `/listgoated` | List goated posts |
+| `/stats` | Reading stats: totals, read rate, top feeds |
 | `/getprompt` | Show the current LLM summarization instruction |
 | `/setprompt <text>` | Edit the LLM summarization instruction |
+| `/setinterests <text>` | Set your interest profile for relevance scoring |
+| `/getinterests` | Show your interest profile and silence threshold |
+| `/setthreshold <1-10>` | Set the score below which posts are delivered silently |
 | `/getlog` | Download the bot log file |
 | `/testfeed <url>` | Fetch and preview the latest post of a feed |
-| `/testall` | Fetch and preview the latest post of every feed |
-| `/testsend` | Send a test post |
 
-Each post sent by the bot has a "Save for later" button. Pressing it pins the message in the chat. Pressing "Remove from later" unpins it.
+Each post has three inline buttons: "Mark as Read", "Save for later" (which pins the message), and "Add to Goated".
 
 
 ## Why
