@@ -1019,7 +1019,7 @@ def handle_listgoated(db, chat_id):
     if not rows:
         send_message(chat_id, "no goated items yet")
         return
-    lines = []
+    lines = ["<b>Goated Items</b> (Search \"goated\" hashtag for the message list)\n\n"]
     for row in rows:
         title = html_escape(row["title"] or "(no title)")
         url = html_escape(row["url"] or "")
@@ -1205,6 +1205,28 @@ def edit_reply_markup(chat_id, message_id, markup):
         log("editMessageReplyMarkup failed:", e)
 
 
+def set_message_tag(chat_id, message_id, message_obj, tag, present, reply_markup=None):
+    if "caption" in message_obj or any(k in message_obj for k in ("document", "audio", "photo", "video")):
+        base = message_obj.get("caption") or ""
+        entities = message_obj.get("caption_entities") or []
+        method, field, ent_field = "editMessageCaption", "caption", "caption_entities"
+    else:
+        base = message_obj.get("text") or ""
+        entities = message_obj.get("entities") or []
+        method, field, ent_field = "editMessageText", "text", "entities"
+    suffix = "\n\n" + tag
+    if base.endswith(suffix):
+        base = base[:-len(suffix)]
+    new_text = base + suffix if present else base
+    payload = {"chat_id": chat_id, "message_id": message_id, field: new_text, ent_field: entities}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        tg_api(method, payload)
+    except Exception as e:
+        log("set_message_tag failed:", e)
+
+
 def handle_callback_query(db, update):
     cb = update["callback_query"]
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
@@ -1266,7 +1288,7 @@ def handle_callback_query(db, update):
         row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
         answer_callback_query(cb["id"], "added to Goated")
         log("goated:", row["title"])
-        edit_reply_markup(chat_id, message_id, item_markup(row))
+        set_message_tag(chat_id, message_id, cb["message"], "#goated", True, reply_markup=item_markup(row))
 
     elif action == "ungoat":
         db.execute("update items set goated = 0 where id = ?", (row["id"],))
@@ -1274,7 +1296,7 @@ def handle_callback_query(db, update):
         row = db.execute("select id, title, saved, goated, read_at from items where id = ?", (item_id,)).fetchone()
         answer_callback_query(cb["id"], "removed from Goated")
         log("un-goated:", row["title"])
-        edit_reply_markup(chat_id, message_id, item_markup(row))
+        set_message_tag(chat_id, message_id, cb["message"], "#goated", False, reply_markup=item_markup(row))
 
     else:
         answer_callback_query(cb["id"], "unknown action")
