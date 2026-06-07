@@ -629,7 +629,7 @@ def send_feed_item(db, feed_url, feed_name, entry):
     attachment = None
     summary = entry.get("summary") or ""
     if entry.get("link"):
-        if _is_youtube_feed(feed_url):
+        if _is_youtube_feed(feed_url) or is_youtube_video_url(entry["link"]):
             try:
                 audio_bytes, filename, transcript = download_youtube(entry["link"])
                 attachment = ("audio", audio_bytes, filename)
@@ -759,6 +759,7 @@ def send_help(chat_id):
             "/addfeed label | <url>",
             "/delfeed <url>",
             "/exportfeeds",
+            "/save [title | ] <url>",
             "/listsaved",
             "/addgoated [title | ] <url>",
             "/listgoated",
@@ -790,6 +791,16 @@ def is_youtube_channel_url(url):
     if parsed.path.startswith("/feeds/"):
         return False
     return bool(re.match(r"^(/(@[\w.-]+)|/channel/[\w-]+|/user/[\w.-]+)$", parsed.path))
+
+
+def is_youtube_video_url(url):
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    if host == "youtu.be":
+        return True
+    if host in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        return parsed.path == "/watch" or parsed.path.startswith("/shorts/")
+    return False
 
 
 def resolve_youtube_feed(url):
@@ -928,6 +939,15 @@ def handle_listsaved(db, chat_id):
         send_message(chat_id, "\n".join(chunk), parse_mode="HTML")
 
 
+def fetch_page_title(url):
+    try:
+        raw = http_get(url, timeout=15)
+        m = re.search(rb"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+        return m.group(1).decode("utf-8", errors="replace").strip() if m else url
+    except Exception:
+        return url
+
+
 def handle_addgoated(db, chat_id, arg):
     if not arg:
         send_message(chat_id, "usage: /addgoated [title | ] <url>")
@@ -939,13 +959,7 @@ def handle_addgoated(db, chat_id, arg):
         send_message(chat_id, "invalid url")
         return
     if not title:
-        try:
-            raw = http_get(url, timeout=15)
-            import re as _re
-            m = _re.search(rb"<title[^>]*>(.*?)</title>", raw, _re.IGNORECASE | _re.DOTALL)
-            title = m.group(1).decode("utf-8", errors="replace").strip() if m else url
-        except Exception:
-            title = url
+        title = fetch_page_title(url)
     existing = db.execute("select id from items where feed_url = 'manual' and item_key = ?", (url,)).fetchone()
     if existing:
         db.execute("update items set goated = 1, title = ? where id = ?", (title, existing["id"]))
@@ -961,6 +975,35 @@ def handle_addgoated(db, chat_id, arg):
     )
     db.commit()
     send_message(chat_id, f"added to Goated: {title}")
+
+
+def handle_save(db, chat_id, arg):
+    if not arg:
+        send_message(chat_id, "usage: /save [title | ] <url>")
+        return
+    parsed = parse_source_line(arg)
+    url = parsed["url"]
+    title = parsed["label"]
+    if not url.startswith(("http://", "https://")):
+        send_message(chat_id, "invalid url")
+        return
+    if not title:
+        title = fetch_page_title(url)
+    entry = {
+        "key": url,
+        "title": title,
+        "link": url,
+        "published": "",
+        "published_ts": None,
+        "summary": "",
+        "extra_links": [],
+    }
+    feed_name = urllib.parse.urlparse(url).netloc
+    try:
+        send_feed_item(db, "manual", feed_name, entry)
+    except Exception as e:
+        log("manual save failed:", url, e)
+        send_message(chat_id, f"could not save: {e}")
 
 
 def handle_listgoated(db, chat_id):
@@ -1263,6 +1306,8 @@ def handle_message(db, update):
         handle_exportfeeds(db, chat_id)
     elif cmd == "/listsaved":
         handle_listsaved(db, chat_id)
+    elif cmd == "/save":
+        handle_save(db, chat_id, arg)
     elif cmd == "/addgoated":
         handle_addgoated(db, chat_id, arg)
     elif cmd == "/listgoated":
@@ -1337,6 +1382,7 @@ def register_commands():
         {"command": "addfeed",     "description": "Add a feed: label | <url>"},
         {"command": "delfeed",     "description": "Remove a feed: <url>"},
         {"command": "exportfeeds", "description": "Download feed list as feeds.txt"},
+        {"command": "save",        "description": "Send any article URL as a post: [title | ] <url>"},
         {"command": "listsaved",   "description": "List posts saved for later"},
         {"command": "addgoated",   "description": "Add an external link to Goated"},
         {"command": "listgoated",  "description": "List goated posts (hall of fame)"},
